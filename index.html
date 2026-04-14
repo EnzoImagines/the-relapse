@@ -34,34 +34,9 @@ import * as THREE from 'three';
 
 let scene, camera, renderer, clock;
 let yaw = 0, pitch = 0;
-const TILE = 4.0, WALL_H = 3.0;
-const GEN_RADIUS = 4;
-const KILL_BEHIND = 3;
-const KILL_DISTANCE = 6;
+const T = 4.0, H = 3.0;
 
-// ─── DETERMINISTIC HASH ───
-// Edges are keyed by the two cells they separate. We always normalize the key
-// so the same edge gives the same result regardless of which side asks.
-function hash(a,b){a=a|0;b=b|0;let h=a*374761393+b*668265263;h=(h^(h>>>13))*1274126177;return((h^(h>>>16))>>>0)/4294967296;}
-
-// Is there a wall on the edge between (x1,z1) and (x2,z2)?
-// ~30% chance of wall on any interior edge = mostly open, some corridors
-function edgeHasWall(x1,z1,x2,z2){
-  // Normalize edge key so (A,B) == (B,A)
-  let a,b;
-  if(x1<x2||(x1===x2&&z1<z2)){a=x1*73856093^z1*19349663;b=x2*73856093^z2*19349663;}
-  else{a=x2*73856093^z2*19349663;b=x1*73856093^z1*19349663;}
-  return hash(a,b) < 0.30;
-}
-
-// ─── CHUNK SYSTEM ───
-const chunks = new Map();
-let playerChunkX = 0, playerChunkZ = 0;
-let stepCount = 0;
-
-// ─── TEXTURES (shared) ───
-let carpetMat, wallMat, ceilingMat;
-
+// ─── TEXTURES ───
 function makeCarpet(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#8a7a55';x.fillRect(0,0,256,256);
@@ -74,7 +49,7 @@ function makeWall(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#c5b890';x.fillRect(0,0,256,256);
   for(let i=0;i<20;i++){x.fillStyle=`rgba(100,90,70,${0.03+Math.random()*0.08})`;x.fillRect(Math.random()*256,0,1+Math.random()*3,256);}
-  for(let s=0;s<2;s++){const gx=Math.random()*256;x.beginPath();x.arc(gx,Math.random()*60,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(80,75,50,0.1)';x.fill();}
+  for(let s=0;s<2;s++){x.beginPath();x.arc(Math.random()*256,Math.random()*60,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(80,75,50,0.1)';x.fill();}
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
 }
@@ -88,267 +63,359 @@ function makeCeiling(){
   return new THREE.MeshStandardMaterial({map:t,roughness:0.85});
 }
 
-// ─── BUILD CHUNK ───
-function buildChunk(cx,cz){
-  const key=`${cx},${cz}`;
-  if(chunks.has(key)) return;
+let carpetMat, wallMat, ceilingMat;
 
-  const meshes=[], lights=[];
-  const wx=cx*TILE, wz=cz*TILE;
+// ─── CORRIDOR CHUNK SYSTEM ───
+// Each chunk is a cell at (cx,cz). It has 4 potential walls (N/S/E/W).
+// A "version" counter per cell changes every time the cell leaves view.
+// Different version = different corridor layout. You can never go back.
+
+const chunkVersions = new Map();  // "x,z" -> version number
+const builtChunks = new Map();    // "x,z" -> { meshes, lights, version, walls:{n,s,e,w} }
+let globalVersion = 0;
+const VIEW_DIST = 5;
+
+function seededRand(x, z, v) {
+  let h = (x * 374761393 + z * 668265263 + v * 982451653) | 0;
+  h = (h ^ (h >>> 13)) * 1274126177;
+  h = (h ^ (h >>> 16));
+  return ((h >>> 0) % 1000) / 1000;
+}
+
+// Determine walls for a cell given its version
+// This creates corridor-like layouts: mostly walled, with 1-3 openings
+function cellWalls(cx, cz, ver) {
+  const r1 = seededRand(cx, cz, ver);
+  const r2 = seededRand(cx + 100, cz + 100, ver);
+  const r3 = seededRand(cx + 200, cz + 200, ver);
+  const r4 = seededRand(cx + 300, cz + 300, ver);
+
+  // Start all walls closed, then open some to make corridors
+  let n = true, s = true, e = true, w = true;
+
+  // Pattern: pick a corridor type
+  const pattern = Math.floor(r1 * 6);
+  switch(pattern) {
+    case 0: n=false; s=false; break;                    // N-S straight
+    case 1: e=false; w=false; break;                    // E-W straight
+    case 2: n=false; e=false; break;                    // L-bend
+    case 3: n=false; w=false; break;                    // L-bend
+    case 4: s=false; e=false; break;                    // L-bend
+    case 5: s=false; w=false; break;                    // L-bend
+  }
+
+  // Sometimes add a third opening (T-junction) ~35%
+  if (r2 < 0.35) {
+    const extra = Math.floor(r3 * 4);
+    if(extra===0) n=false;
+    else if(extra===1) s=false;
+    else if(extra===2) e=false;
+    else w=false;
+  }
+
+  // Rarely open all 4 (crossroads) ~8%
+  if (r4 < 0.08) { n=false; s=false; e=false; w=false; }
+
+  return {n,s,e,w};
+}
+
+function getVersion(cx, cz) {
+  const key = `${cx},${cz}`;
+  if (!chunkVersions.has(key)) chunkVersions.set(key, 0);
+  return chunkVersions.get(key);
+}
+
+function bumpVersion(cx, cz) {
+  const key = `${cx},${cz}`;
+  const v = (chunkVersions.get(key) || 0) + 1;
+  chunkVersions.set(key, v);
+  return v;
+}
+
+function buildChunk(cx, cz) {
+  const key = `${cx},${cz}`;
+  const ver = getVersion(cx, cz);
+
+  // Already built with this version? Skip
+  const existing = builtChunks.get(key);
+  if (existing && existing.version === ver) return;
+
+  // Remove old version if exists
+  if (existing) destroyChunk(key);
+
+  const walls = cellWalls(cx, cz, ver);
+  const meshes = [], lights = [];
+  const wx = cx * T, wz = cz * T;
 
   // Floor
-  const f=new THREE.Mesh(new THREE.PlaneGeometry(TILE,TILE),carpetMat);
-  f.rotation.x=-Math.PI/2;f.position.set(wx,0,wz);scene.add(f);meshes.push(f);
+  const f = new THREE.Mesh(new THREE.PlaneGeometry(T, T), carpetMat);
+  f.rotation.x = -Math.PI / 2; f.position.set(wx, 0, wz);
+  scene.add(f); meshes.push(f);
 
   // Ceiling
-  const c=new THREE.Mesh(new THREE.PlaneGeometry(TILE,TILE),ceilingMat);
-  c.rotation.x=Math.PI/2;c.position.set(wx,WALL_H,wz);scene.add(c);meshes.push(c);
+  const c = new THREE.Mesh(new THREE.PlaneGeometry(T, T), ceilingMat);
+  c.rotation.x = Math.PI / 2; c.position.set(wx, H, wz);
+  scene.add(c); meshes.push(c);
 
-  // Walls — check each edge
-  // North wall: edge between (cx,cz) and (cx,cz-1)
-  if(edgeHasWall(cx,cz,cx,cz-1)){
-    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
-    w.position.set(wx,WALL_H/2,wz-TILE/2);scene.add(w);meshes.push(w);
+  // Walls
+  if (walls.n) {
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
+    w.position.set(wx, H/2, wz - T/2); scene.add(w); meshes.push(w);
   }
-  // South wall
-  if(edgeHasWall(cx,cz,cx,cz+1)){
-    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
-    w.position.set(wx,WALL_H/2,wz+TILE/2);w.rotation.y=Math.PI;scene.add(w);meshes.push(w);
+  if (walls.s) {
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
+    w.position.set(wx, H/2, wz + T/2); w.rotation.y = Math.PI; scene.add(w); meshes.push(w);
   }
-  // West wall
-  if(edgeHasWall(cx,cz,cx-1,cz)){
-    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
-    w.position.set(wx-TILE/2,WALL_H/2,wz);w.rotation.y=Math.PI/2;scene.add(w);meshes.push(w);
+  if (walls.w) {
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
+    w.position.set(wx - T/2, H/2, wz); w.rotation.y = Math.PI/2; scene.add(w); meshes.push(w);
   }
-  // East wall
-  if(edgeHasWall(cx,cz,cx+1,cz)){
-    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
-    w.position.set(wx+TILE/2,WALL_H/2,wz);w.rotation.y=-Math.PI/2;scene.add(w);meshes.push(w);
+  if (walls.e) {
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
+    w.position.set(wx + T/2, H/2, wz); w.rotation.y = -Math.PI/2; scene.add(w); meshes.push(w);
   }
 
-  // Light fixture — every other room gets a real PointLight
-  const cellHash = hash(cx*31,cz*37);
-  const lightWorking = cellHash > 0.08;
-  const hasReal = lightWorking && (Math.abs(cx)+Math.abs(cz))%2===0;
-  const flickering = hasReal && cellHash > 0.92; // ~8% of lit rooms flicker
+  // Light fixture
+  const lr = seededRand(cx + 500, cz + 500, ver);
+  const working = lr > 0.1;
+  const hasReal = working && (Math.abs(cx) + Math.abs(cz)) % 2 === 0;
+  const flickering = hasReal && lr > 0.93;
 
-  const tube=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.05,0.12),
+  const tube = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 0.12),
     new THREE.MeshStandardMaterial({
-      color:lightWorking?0xffffee:0x333333,
-      emissive:lightWorking?0xffffdd:0x000000,
-      emissiveIntensity:lightWorking?0.8:0
+      color: working ? 0xffffee : 0x333333,
+      emissive: working ? 0xffffdd : 0x000000,
+      emissiveIntensity: working ? 0.8 : 0
     }));
-  tube.position.set(wx,WALL_H-0.05,wz);scene.add(tube);meshes.push(tube);
+  tube.position.set(wx, H - 0.05, wz); scene.add(tube); meshes.push(tube);
 
-  if(hasReal){
-    const l=new THREE.PointLight(0xffeedd,1.0,TILE*2.5);
-    l.position.set(wx,WALL_H-0.12,wz);scene.add(l);lights.push(l);
-    if(flickering){l.userData.flickering=true;l.userData.phase=cellHash*Math.PI*6;l.userData.tube=tube;}
+  if (hasReal) {
+    const l = new THREE.PointLight(0xffeedd, 1.0, T * 2.5);
+    l.position.set(wx, H - 0.12, wz); scene.add(l); lights.push(l);
+    if (flickering) { l.userData.flickering = true; l.userData.phase = lr * 20; l.userData.tube = tube; }
   }
 
-  chunks.set(key,{meshes,lights,cx,cz});
+  builtChunks.set(key, { meshes, lights, version: ver, walls, cx, cz });
 }
 
-function removeChunk(key){
-  const chunk=chunks.get(key);
-  if(!chunk) return;
-  for(const m of chunk.meshes){scene.remove(m);if(m.geometry)m.geometry.dispose();}
-  for(const l of chunk.lights) scene.remove(l);
-  chunks.delete(key);
+function destroyChunk(key) {
+  const chunk = builtChunks.get(key);
+  if (!chunk) return;
+  for (const m of chunk.meshes) { scene.remove(m); if (m.geometry) m.geometry.dispose(); }
+  for (const l of chunk.lights) scene.remove(l);
+  builtChunks.delete(key);
 }
 
-function generateAround(px,pz){
-  for(let dx=-GEN_RADIUS;dx<=GEN_RADIUS;dx++)
-    for(let dz=-GEN_RADIUS;dz<=GEN_RADIUS;dz++){
-      if(dx*dx+dz*dz>GEN_RADIUS*GEN_RADIUS) continue;
-      buildChunk(px+dx,pz+dz);
-    }
+// ─── VIEW-BASED GENERATION & CULLING ───
+// Generate in front, bump versions behind
+
+function isInView(cx, cz, px, pz, fwdX, fwdZ) {
+  const dx = cx - px, dz = cz - pz;
+  const dist = Math.sqrt(dx*dx + dz*dz);
+  if (dist < 1.5) return true; // always keep immediate neighbors
+  if (dist > VIEW_DIST) return false;
+  const dot = (dx * fwdX + dz * fwdZ) / Math.max(dist, 0.01);
+  return dot > -0.25; // roughly forward hemisphere + a bit behind
 }
 
-function cullBehind(px,pz){
-  const fwd=new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
-  const toRemove=[];
-  for(const[key,chunk]of chunks){
-    const dx=chunk.cx-px,dz=chunk.cz-pz;
-    const dist=Math.sqrt(dx*dx+dz*dz);
-    if(dist>KILL_DISTANCE){toRemove.push(key);continue;}
-    if(dist>KILL_BEHIND){
-      const dot=(dx*fwd.x+dz*fwd.z)/Math.max(dist,0.01);
-      if(dot<-0.3) toRemove.push(key);
+function updateWorld() {
+  const px = Math.round(camera.position.x / T);
+  const pz = Math.round(camera.position.z / T);
+  const fwd = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+  // 1. Bump versions for chunks that are out of view
+  for (const [key, chunk] of builtChunks) {
+    if (!isInView(chunk.cx, chunk.cz, px, pz, fwd.x, fwd.z)) {
+      bumpVersion(chunk.cx, chunk.cz);
+      destroyChunk(key);
     }
   }
-  for(const key of toRemove) removeChunk(key);
+
+  // 2. Generate/rebuild chunks in view
+  for (let dx = -VIEW_DIST; dx <= VIEW_DIST; dx++) {
+    for (let dz = -VIEW_DIST; dz <= VIEW_DIST; dz++) {
+      if (dx*dx + dz*dz > VIEW_DIST*VIEW_DIST) continue;
+      const cx = px + dx, cz = pz + dz;
+      if (isInView(cx, cz, px, pz, fwd.x, fwd.z)) {
+        buildChunk(cx, cz);
+      }
+    }
+  }
 }
 
 // ─── COLLISION ───
-function wallBlocks(x,z,dir){
-  const cx=Math.round(x/TILE),cz=Math.round(z/TILE);
-  if(dir==='n') return edgeHasWall(cx,cz,cx,cz-1);
-  if(dir==='s') return edgeHasWall(cx,cz,cx,cz+1);
-  if(dir==='w') return edgeHasWall(cx,cz,cx-1,cz);
-  if(dir==='e') return edgeHasWall(cx,cz,cx+1,cz);
-  return false;
+function getWalls(cx, cz) {
+  const key = `${cx},${cz}`;
+  const chunk = builtChunks.get(key);
+  if (chunk) return chunk.walls;
+  // Not built yet — compute from current version
+  return cellWalls(cx, cz, getVersion(cx, cz));
 }
 
-function canMove(x,z){
-  const cx=Math.round(x/TILE),cz=Math.round(z/TILE);
-  const lx=x-cx*TILE, lz=z-cz*TILE;
-  const m=0.35;
-  if(lz<-TILE/2+m && wallBlocks(x,z,'n')) return false;
-  if(lz>TILE/2-m && wallBlocks(x,z,'s')) return false;
-  if(lx<-TILE/2+m && wallBlocks(x,z,'w')) return false;
-  if(lx>TILE/2-m && wallBlocks(x,z,'e')) return false;
+function canMove(x, z) {
+  const cx = Math.round(x / T), cz = Math.round(z / T);
+  const lx = x - cx * T, lz = z - cz * T;
+  const m = 0.35;
+  const w = getWalls(cx, cz);
+  if (lz < -T/2 + m && w.n) return false;
+  if (lz > T/2 - m && w.s) return false;
+  if (lx < -T/2 + m && w.w) return false;
+  if (lx > T/2 - m && w.e) return false;
   return true;
 }
 
 // ─── AUDIO ───
-let audioCtx, masterGain, humStarted=false;
-function initAudio(){
-  if(humStarted) return;
-  audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-  masterGain=audioCtx.createGain();masterGain.gain.value=0.5;
+let audioCtx, masterGain, humStarted = false;
+function initAudio() {
+  if (humStarted) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain(); masterGain.gain.value = 0.5;
   masterGain.connect(audioCtx.destination);
 
-  const h=audioCtx.createOscillator();h.type='sawtooth';h.frequency.value=60;
-  const hg=audioCtx.createGain();hg.gain.value=0.01;
-  const hf=audioCtx.createBiquadFilter();hf.type='lowpass';hf.frequency.value=150;
-  h.connect(hf);hf.connect(hg);hg.connect(masterGain);h.start();
+  const h = audioCtx.createOscillator(); h.type = 'sawtooth'; h.frequency.value = 60;
+  const hg = audioCtx.createGain(); hg.gain.value = 0.01;
+  const hf = audioCtx.createBiquadFilter(); hf.type = 'lowpass'; hf.frequency.value = 150;
+  h.connect(hf); hf.connect(hg); hg.connect(masterGain); h.start();
 
-  const buzz=audioCtx.createOscillator();buzz.type='square';buzz.frequency.value=120;
-  const buzzG=audioCtx.createGain();buzzG.gain.value=0.005;
-  const buzzF=audioCtx.createBiquadFilter();buzzF.type='bandpass';buzzF.frequency.value=240;buzzF.Q.value=8;
-  buzz.connect(buzzF);buzzF.connect(buzzG);buzzG.connect(masterGain);buzz.start();
+  const buzz = audioCtx.createOscillator(); buzz.type = 'square'; buzz.frequency.value = 120;
+  const buzzG = audioCtx.createGain(); buzzG.gain.value = 0.005;
+  const buzzF = audioCtx.createBiquadFilter(); buzzF.type = 'bandpass'; buzzF.frequency.value = 240; buzzF.Q.value = 8;
+  buzz.connect(buzzF); buzzF.connect(buzzG); buzzG.connect(masterGain); buzz.start();
 
-  setInterval(()=>{
-    if(Math.random()>0.4)return;
-    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.12,audioCtx.sampleRate);
-    const dd=buf.getChannelData(0);const freq=800+Math.random()*500;
-    for(let i=0;i<dd.length;i++)dd[i]=Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)*Math.exp(-i/audioCtx.sampleRate*45)*0.06;
-    const src=audioCtx.createBufferSource();src.buffer=buf;
-    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
-    const g=audioCtx.createGain();g.gain.value=0.08+Math.random()*0.08;
-    src.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
-  },4000);
+  setInterval(() => {
+    if (Math.random() > 0.4) return;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.12, audioCtx.sampleRate);
+    const dd = buf.getChannelData(0); const freq = 800 + Math.random() * 500;
+    for (let i = 0; i < dd.length; i++) dd[i] = Math.sin(i / audioCtx.sampleRate * freq * Math.PI * 2) * Math.exp(-i / audioCtx.sampleRate * 45) * 0.06;
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random() * 2 - 1;
+    const g = audioCtx.createGain(); g.gain.value = 0.08 + Math.random() * 0.08;
+    src.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
+  }, 4000);
 
-  setInterval(()=>{
-    if(Math.random()>0.3)return;
-    const dur=0.6+Math.random()*0.4;
-    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*dur,audioCtx.sampleRate);
-    const dd=buf.getChannelData(0);const freq=35+Math.random()*25;
-    for(let i=0;i<dd.length;i++){const env=Math.exp(-i/audioCtx.sampleRate*3);dd[i]=(Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)+Math.random()*0.3)*env*0.04;}
-    const src=audioCtx.createBufferSource();src.buffer=buf;
-    const f=audioCtx.createBiquadFilter();f.type='bandpass';f.frequency.value=50+Math.random()*60;f.Q.value=5;
-    const g=audioCtx.createGain();g.gain.value=0.12;
-    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
-    src.connect(f);f.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
-  },10000);
+  setInterval(() => {
+    if (Math.random() > 0.3) return;
+    const dur = 0.6 + Math.random() * 0.4;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+    const dd = buf.getChannelData(0); const freq = 35 + Math.random() * 25;
+    for (let i = 0; i < dd.length; i++) { const env = Math.exp(-i / audioCtx.sampleRate * 3); dd[i] = (Math.sin(i / audioCtx.sampleRate * freq * Math.PI * 2) + Math.random() * 0.3) * env * 0.04; }
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 50 + Math.random() * 60; f.Q.value = 5;
+    const g = audioCtx.createGain(); g.gain.value = 0.12;
+    const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random() * 2 - 1;
+    src.connect(f); f.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
+  }, 10000);
 
-  humStarted=true;
+  humStarted = true;
 }
 
-let isWalking=false,stepPhase=0;
-function playStep(){
-  if(!audioCtx)return;
-  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.1,audioCtx.sampleRate);
-  const d=buf.getChannelData(0);
-  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/audioCtx.sampleRate*50)*0.2;
-  const src=audioCtx.createBufferSource();src.buffer=buf;
-  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=200+Math.random()*100;
-  const g=audioCtx.createGain();g.gain.value=0.1;
-  src.connect(f);f.connect(g);g.connect(masterGain);src.start();
+let isWalking = false, stepPhase = 0;
+function playStep() {
+  if (!audioCtx) return;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / audioCtx.sampleRate * 50) * 0.2;
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+  const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 200 + Math.random() * 100;
+  const g = audioCtx.createGain(); g.gain.value = 0.1;
+  src.connect(f); f.connect(g); g.connect(masterGain); src.start();
 }
-function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,380+Math.random()*60+(stepPhase%2===0?0:40));}
+function stepLoop() { if (!isWalking) return; playStep(); stepPhase++; setTimeout(stepLoop, 380 + Math.random() * 60 + (stepPhase % 2 === 0 ? 0 : 40)); }
 
 // ─── CONTROLS ───
-const keys={};
-addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true);
-addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+const keys = {};
+addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
 
 // ─── INIT ───
-function init(){
-  scene=new THREE.Scene();
-  scene.background=new THREE.Color(0x1a1708);
-  scene.fog=new THREE.FogExp2(0x1a1708,0.045);
-  clock=new THREE.Clock();
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1708);
+  scene.fog = new THREE.FogExp2(0x1a1708, 0.05);
+  clock = new THREE.Clock();
 
-  renderer=new THREE.WebGLRenderer({antialias:true});
-  renderer.setSize(innerWidth,innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-  renderer.shadowMap.enabled=false;
-  renderer.toneMapping=THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure=1.2;
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.shadowMap.enabled = false;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
   document.body.appendChild(renderer.domElement);
 
-  camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
-  camera.position.set(0,1.6,0);
+  camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 100);
+  camera.position.set(0, 1.6, 0);
 
-  scene.add(new THREE.AmbientLight(0xffe8c0,0.5));
+  scene.add(new THREE.AmbientLight(0xffe8c0, 0.5));
 
-  carpetMat=makeCarpet();wallMat=makeWall();ceilingMat=makeCeiling();
+  carpetMat = makeCarpet(); wallMat = makeWall(); ceilingMat = makeCeiling();
 
-  generateAround(0,0);
+  // Initial build — generate everything around start
+  for (let dx = -VIEW_DIST; dx <= VIEW_DIST; dx++)
+    for (let dz = -VIEW_DIST; dz <= VIEW_DIST; dz++)
+      if (dx*dx + dz*dz <= VIEW_DIST*VIEW_DIST) buildChunk(dx, dz);
 
-  document.addEventListener('click',()=>{
-    document.body.requestPointerLock();initAudio();
+  document.addEventListener('click', () => {
+    document.body.requestPointerLock(); initAudio();
     document.getElementById('prompt').classList.add('hidden');
   });
-  document.addEventListener('mousemove',e=>{
-    if(document.pointerLockElement){
-      yaw-=e.movementX*0.002;
-      pitch-=e.movementY*0.002;
-      pitch=Math.max(-1.2,Math.min(1.2,pitch));
+  document.addEventListener('mousemove', e => {
+    if (document.pointerLockElement) {
+      yaw -= e.movementX * 0.002;
+      pitch -= e.movementY * 0.002;
+      pitch = Math.max(-1.2, Math.min(1.2, pitch));
     }
   });
-  addEventListener('resize',()=>{
-    camera.aspect=innerWidth/innerHeight;
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth,innerHeight);
+    renderer.setSize(innerWidth, innerHeight);
   });
 
   animate();
 }
 
 // ─── LOOP ───
-function animate(){
+let updateTimer = 0;
+function animate() {
   requestAnimationFrame(animate);
-  const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 0.1), t = clock.getElapsedTime();
 
-  const speed=2.8,dir=new THREE.Vector3();
-  if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
-  if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
-  const moving=dir.length()>0.01;
-  dir.normalize().multiplyScalar(speed*dt);
-  dir.applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
-  const nx=camera.position.x+dir.x,nz=camera.position.z+dir.z;
-  if(canMove(nx,camera.position.z))camera.position.x=nx;
-  if(canMove(camera.position.x,nz))camera.position.z=nz;
+  const speed = 2.8, dir = new THREE.Vector3();
+  if (keys['w']) dir.z -= 1; if (keys['s']) dir.z += 1;
+  if (keys['a']) dir.x -= 1; if (keys['d']) dir.x += 1;
+  const moving = dir.length() > 0.01;
+  dir.normalize().multiplyScalar(speed * dt);
+  dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+  const nx = camera.position.x + dir.x, nz = camera.position.z + dir.z;
+  if (canMove(nx, camera.position.z)) camera.position.x = nx;
+  if (canMove(camera.position.x, nz)) camera.position.z = nz;
 
-  camera.position.y=1.6+(moving?Math.sin(t*8)*0.02:0);
-  camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
+  camera.position.y = 1.6 + (moving ? Math.sin(t * 8) * 0.02 : 0);
+  camera.rotation.order = 'YXZ'; camera.rotation.y = yaw; camera.rotation.x = pitch;
 
-  if(moving&&!isWalking){isWalking=true;stepLoop();}
-  else if(!moving)isWalking=false;
+  if (moving && !isWalking) { isWalking = true; stepLoop(); }
+  else if (!moving) isWalking = false;
 
-  const newCX=Math.round(camera.position.x/TILE);
-  const newCZ=Math.round(camera.position.z/TILE);
-  if(newCX!==playerChunkX||newCZ!==playerChunkZ){
-    playerChunkX=newCX;playerChunkZ=newCZ;stepCount++;
-    generateAround(playerChunkX,playerChunkZ);
-    if(stepCount>3) cullBehind(playerChunkX,playerChunkZ);
-    document.getElementById('hud').textContent=`level ${Math.abs(playerChunkX+playerChunkZ*7)%100}`;
+  // Update world every few frames (not every frame for perf)
+  updateTimer += dt;
+  if (updateTimer > 0.15) {
+    updateTimer = 0;
+    updateWorld();
+    const px = Math.round(camera.position.x / T), pz = Math.round(camera.position.z / T);
+    document.getElementById('hud').textContent = `level ${Math.abs(px + pz * 7) % 100}`;
   }
 
   // Flicker
-  for(const[,chunk]of chunks)
-    for(const l of chunk.lights)
-      if(l.userData.flickering){
-        const fl=Math.sin(t*12+l.userData.phase)*Math.sin(t*19+l.userData.phase*2);
-        const on=fl>-0.2;
-        l.intensity=on?0.8+Math.random()*0.2:0;
-        if(l.userData.tube){l.userData.tube.material.emissiveIntensity=on?0.8:0;l.userData.tube.material.color.set(on?0xffffee:0x333333);}
+  for (const [, chunk] of builtChunks)
+    for (const l of chunk.lights)
+      if (l.userData.flickering) {
+        const fl = Math.sin(t * 12 + l.userData.phase) * Math.sin(t * 19 + l.userData.phase * 2);
+        const on = fl > -0.2;
+        l.intensity = on ? 0.8 + Math.random() * 0.2 : 0;
+        if (l.userData.tube) { l.userData.tube.material.emissiveIntensity = on ? 0.8 : 0; l.userData.tube.material.color.set(on ? 0xffffee : 0x333333); }
       }
 
-  renderer.render(scene,camera);
+  renderer.render(scene, camera);
 }
 
 init();
