@@ -375,6 +375,7 @@ function makeArtwork(seed,w,h){
   }
   const t=new THREE.CanvasTexture(c);
   return new THREE.MeshStandardMaterial({map:t,roughness:0.75});
+}
 
 function makeCarpetMat(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
