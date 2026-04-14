@@ -282,10 +282,32 @@ const builtChunks = new Map();
 const worldLogs = new Map(); // "cx,cz" -> { mesh, id }
 let nearLog = null; // log currently in range
 
-// ─── TEXTURES ───
-let carpetMat, wallMat, ceilingMat, paperMat;
+// ─── SHARED GEOMETRY + MATERIALS (allocated once) ───
+let carpetMat, wallMat, ceilingMat;
+let floorGeo, ceilGeo, wallNSGeo, wallEWGeo, tubeGeo, lightOnMat, lightOffMat;
+let paperGeo, paperMat, tableTopGeo, tableLegGeo, tableMat;
 
-function makeCarpet(){
+function initResources(){
+  // Textures + materials
+  carpetMat=makeCarpetMat(); wallMat=makeWallMat(); ceilingMat=makeCeilingMat();
+  lightOnMat=new THREE.MeshStandardMaterial({color:0xffffee,emissive:0xffffdd,emissiveIntensity:0.8});
+  lightOffMat=new THREE.MeshStandardMaterial({color:0x333333});
+  paperMat=new THREE.MeshStandardMaterial({color:0xeee8d5,roughness:0.7,side:THREE.DoubleSide});
+  tableMat=new THREE.MeshStandardMaterial({color:0x665544,roughness:0.8});
+
+  // Shared geometry — created ONCE, reused by every chunk
+  const WT=0.2;
+  floorGeo=new THREE.PlaneGeometry(T,T);
+  ceilGeo=new THREE.PlaneGeometry(T,T);
+  wallNSGeo=new THREE.BoxGeometry(T+WT,H,WT);
+  wallEWGeo=new THREE.BoxGeometry(WT,H,T+WT);
+  tubeGeo=new THREE.BoxGeometry(0.9,0.04,0.1);
+  paperGeo=new THREE.PlaneGeometry(0.3,0.4);
+  tableTopGeo=new THREE.BoxGeometry(0.7,0.04,0.5);
+  tableLegGeo=new THREE.BoxGeometry(0.04,0.55,0.04);
+}
+
+function makeCarpetMat(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#8a7a55';x.fillRect(0,0,256,256);
   for(let i=0;i<8000;i++){const b=100+Math.random()*40;x.fillStyle=`rgb(${b},${b*0.88|0},${b*0.6|0})`;x.fillRect(Math.random()*256,Math.random()*256,1+Math.random()*2,1+Math.random()*2);}
@@ -293,7 +315,7 @@ function makeCarpet(){
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.95});
 }
-function makeWall(){
+function makeWallMat(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#c5b890';x.fillRect(0,0,256,256);
   for(let i=0;i<20;i++){x.fillStyle=`rgba(100,90,70,${0.03+Math.random()*0.08})`;x.fillRect(Math.random()*256,0,1+Math.random()*3,256);}
@@ -301,7 +323,7 @@ function makeWall(){
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
 }
-function makeCeiling(){
+function makeCeilingMat(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#b8ad95';x.fillRect(0,0,256,256);
   x.strokeStyle='rgba(80,70,55,0.3)';x.lineWidth=1;
@@ -390,34 +412,24 @@ function spawnLog(cx,cz,logId){
   if(worldLogs.has(key)) return;
 
   const wx=cx*T, wz=cz*T;
-
-  // Paper on floor or floating slightly (on a "table")
   const onTable = Math.random() > 0.6;
   const group = new THREE.Group();
 
   if(onTable){
-    // Small table
-    const tableMat = new THREE.MeshStandardMaterial({color:0x665544,roughness:0.8});
-    const top = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.04,0.5),tableMat);
+    const top = new THREE.Mesh(tableTopGeo,tableMat);
     top.position.y=0.55; group.add(top);
     for(const lx of[-0.28,0.28]) for(const lz of[-0.18,0.18]){
-      const leg=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.55,0.04),tableMat);
+      const leg=new THREE.Mesh(tableLegGeo,tableMat);
       leg.position.set(lx,0.275,lz); group.add(leg);
     }
   }
 
-  // Paper
-  const paper = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.3,0.4),
-    new THREE.MeshStandardMaterial({color:0xeee8d5,roughness:0.7,side:THREE.DoubleSide})
-  );
-  paper.rotation.x = onTable ? -Math.PI/2 : -Math.PI/2;
+  const paper = new THREE.Mesh(paperGeo,paperMat);
+  paper.rotation.x = -Math.PI/2;
   paper.position.y = onTable ? 0.58 : 0.01;
-  // Slight random rotation
   paper.rotation.z = (Math.random()-0.5)*0.3;
   group.add(paper);
 
-  // Slight offset within cell
   const ox=(Math.random()-0.5)*0.5, oz=(Math.random()-0.5)*0.5;
   group.position.set(wx+ox,0,wz+oz);
   scene.add(group);
@@ -445,33 +457,27 @@ function buildChunk(cx,cz){
   const wx=cx*T, wz=cz*T;
 
   // Floor
-  const f=new THREE.Mesh(new THREE.PlaneGeometry(T,T),carpetMat);
+  const f=new THREE.Mesh(floorGeo,carpetMat);
   f.rotation.x=-Math.PI/2;f.position.set(wx,0,wz);scene.add(f);meshes.push(f);
 
   // Ceiling
-  const c=new THREE.Mesh(new THREE.PlaneGeometry(T,T),ceilingMat);
+  const c=new THREE.Mesh(ceilGeo,ceilingMat);
   c.rotation.x=Math.PI/2;c.position.set(wx,H,wz);scene.add(c);meshes.push(c);
 
-  // Walls — thick 3D boxes
-  const WT=0.2; // wall thickness
-  if(walls.n){const w=new THREE.Mesh(new THREE.BoxGeometry(T+WT,H,WT),wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
-  if(walls.s){const w=new THREE.Mesh(new THREE.BoxGeometry(T+WT,H,WT),wallMat);w.position.set(wx,H/2,wz+T/2);scene.add(w);meshes.push(w);}
-  if(walls.w){const w=new THREE.Mesh(new THREE.BoxGeometry(WT,H,T+WT),wallMat);w.position.set(wx-T/2,H/2,wz);scene.add(w);meshes.push(w);}
-  if(walls.e){const w=new THREE.Mesh(new THREE.BoxGeometry(WT,H,T+WT),wallMat);w.position.set(wx+T/2,H/2,wz);scene.add(w);meshes.push(w);}
+  // Walls — shared geometry
+  if(walls.n){const w=new THREE.Mesh(wallNSGeo,wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
+  if(walls.s){const w=new THREE.Mesh(wallNSGeo,wallMat);w.position.set(wx,H/2,wz+T/2);scene.add(w);meshes.push(w);}
+  if(walls.w){const w=new THREE.Mesh(wallEWGeo,wallMat);w.position.set(wx-T/2,H/2,wz);scene.add(w);meshes.push(w);}
+  if(walls.e){const w=new THREE.Mesh(wallEWGeo,wallMat);w.position.set(wx+T/2,H/2,wz);scene.add(w);meshes.push(w);}
 
-  // Light fixture
+  // Light fixture — shared geometry + materials
   let h2=(cx*31337+cz*73+ver*99)|0;h2=(h2^(h2>>>13))*1274126177;h2=h2^(h2>>>16);
   const lr=((h2>>>0)%1000)/1000;
   const working=lr>0.12;
   const hasReal=working&&(Math.abs(cx)+Math.abs(cz))%2===0;
   const flickering=hasReal&&lr>0.94;
 
-  const tube=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.04,0.1),
-    new THREE.MeshStandardMaterial({
-      color:working?0xffffee:0x333333,
-      emissive:working?0xffffdd:0x000000,
-      emissiveIntensity:working?0.8:0
-    }));
+  const tube=new THREE.Mesh(tubeGeo,working?lightOnMat:lightOffMat);
   tube.position.set(wx,H-0.04,wz);scene.add(tube);meshes.push(tube);
 
   if(hasReal){
@@ -492,10 +498,9 @@ function buildChunk(cx,cz){
 function destroyChunk(key){
   const chunk=builtChunks.get(key);
   if(!chunk)return;
-  for(const m of chunk.meshes){scene.remove(m);if(m.geometry)m.geometry.dispose();}
-  for(const l of chunk.lights)scene.remove(l);
+  for(const m of chunk.meshes) scene.remove(m);
+  for(const l of chunk.lights) scene.remove(l);
   builtChunks.delete(key);
-  // Also remove any log in this cell
   removeWorldLog(key);
 }
 
@@ -508,23 +513,41 @@ function isInView(cx,cz,px,pz,fx,fz){
   return(dx*fx+dz*fz)/Math.max(dist,0.01)>-0.25;
 }
 
+const BUILD_PER_FRAME = 4; // max new chunks per update
+const DESTROY_PER_FRAME = 6;
+
 function updateWorld(){
   const px=Math.round(camera.position.x/T),pz=Math.round(camera.position.z/T);
   const fwd=new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
 
+  // Destroy out-of-view (throttled)
+  let destroyed=0;
   for(const[key,chunk]of builtChunks){
+    if(destroyed>=DESTROY_PER_FRAME) break;
     if(!isInView(chunk.cx,chunk.cz,px,pz,fwd.x,fwd.z)){
       bumpVersion(chunk.cx,chunk.cz);
       destroyChunk(key);
+      destroyed++;
     }
   }
 
+  // Build in-view (throttled, closest first)
+  const needed=[];
   for(let dx=-VIEW_DIST;dx<=VIEW_DIST;dx++)
     for(let dz=-VIEW_DIST;dz<=VIEW_DIST;dz++){
       if(dx*dx+dz*dz>VIEW_DIST*VIEW_DIST)continue;
       const cx=px+dx,cz=pz+dz;
-      if(isInView(cx,cz,px,pz,fwd.x,fwd.z)) buildChunk(cx,cz);
+      const key=`${cx},${cz}`;
+      const ver=getVersion(cx,cz);
+      const existing=builtChunks.get(key);
+      if(existing&&existing.version===ver) continue;
+      if(isInView(cx,cz,px,pz,fwd.x,fwd.z))
+        needed.push({cx,cz,dist:dx*dx+dz*dz});
     }
+  // Build closest first
+  needed.sort((a,b)=>a.dist-b.dist);
+  for(let i=0;i<Math.min(needed.length,BUILD_PER_FRAME);i++)
+    buildChunk(needed[i].cx,needed[i].cz);
 }
 
 // ─── COLLISION ───
@@ -685,7 +708,7 @@ function init(){
 
   scene.add(new THREE.AmbientLight(0xffe8c0,0.45));
 
-  carpetMat=makeCarpet();wallMat=makeWall();ceilingMat=makeCeiling();
+  initResources();
 
   // Initial build
   for(let dx=-VIEW_DIST;dx<=VIEW_DIST;dx++)
@@ -739,7 +762,7 @@ function animate(){
   }
 
   updateTimer+=dt;
-  if(updateTimer>0.15){
+  if(updateTimer>0.1){
     updateTimer=0;
     updateWorld();
     checkNearLog();
