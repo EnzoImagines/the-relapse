@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dream Subway</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            overflow: hidden;
+            font-family: monospace;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #666;
+            font-size: 12px;
+            z-index: 100;
+            user-select: none;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #666;
+            font-size: 18px;
+            z-index: 1000;
+        }
+        
+        canvas {
+            display: block;
+            cursor: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading dream subway...</div>
+    <div id="info" style="display: none;">
+        WASD: Move | Mouse: Look | Click: Lock cursor<br>
+        ESC: Exit
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Global variables
+        let scene, camera, renderer, controls;
+        let clock = new THREE.Clock();
+        let isLocked = false;
+        
+        // Movement
+        let moveForward = false, moveBackward = false;
+        let moveLeft = false, moveRight = false;
+        let velocity = new THREE.Vector3();
+        let direction = new THREE.Vector3();
+        
+        // Audio context
+        let audioContext, hum, footsteps;
+        
+        // Station data - places that feel familiar but aren't quite right
+        const stations = [
+            "Childhood Home", "School Hallway", "First Job", "Empty Theatre",
+            "Grandmother's Kitchen", "Rain Station", "Midnight Diner", "Lost Weekend",
+            "Library After Hours", "Hotel Corridor", "Airport Terminal", "Memory Ward"
+        ];
+        
+        let currentStation = 0;
+        let stationSigns = [];
+        let trains = [];
+        
+        // Initialize the scene
+        function init() {
+            // Scene setup
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x111111, 0.015);
+            
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 5);
+            
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x111111);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+            
+            // Pointer lock
+            setupPointerLock();
+            
+            // Create subway environment
+            createSubwayStation();
+            createTunnels();
+            createTrains();
+            createLighting();
+            createAudio();
+            
+            // Event listeners
+            setupControls();
+            window.addEventListener('resize', onWindowResize);
+            
+            // Hide loading, show info
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('info').style.display = 'block';
+            
+            animate();
+        }
+        
+        function setupPointerLock() {
+            const element = document.body;
+            
+            element.addEventListener('click', () => {
+                element.requestPointerLock();
+            });
+            
+            document.addEventListener('pointerlockchange', () => {
+                isLocked = document.pointerLockElement === element;
+            });
+        }
+        
+        function createSubwayStation() {
+            // Platform
+            const platformGeometry = new THREE.BoxGeometry(60, 0.2, 8);
+            const platformMaterial = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
+            const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+            platform.position.y = -0.1;
+            platform.receiveShadow = true;
+            scene.add(platform);
+            
+            // Platform edge - yellow safety line (but it's faded)
+            const edgeGeometry = new THREE.BoxGeometry(60, 0.02, 0.3);
+            const edgeMaterial = new THREE.MeshLambertMaterial({ color: 0x554400 });
+            const edge = new THREE.Mesh(edgeGeometry, edgeMaterial);
+            edge.position.set(0, 0.1, -3.5);
+            scene.add(edge);
+            
+            // Ceiling
+            const ceilingGeometry = new THREE.PlaneGeometry(60, 20);
+            const ceilingMaterial = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+            const ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
+            ceiling.rotation.x = Math.PI / 2;
+            ceiling.position.y = 4;
+            scene.add(ceiling);
+            
+            // Walls
+            createWalls();
+            
+            // Station signs
+            createStationSigns();
+            
+            // Benches (empty, of course)
+            createBenches();
+            
+            // Tracks
+            createTracks();
+            
+            // Random details
+            createStationDetails();
+        }
+        
+        function createWalls() {
+            // Back wall
+            const wallGeometry = new THREE.PlaneGeometry(60, 5);
+            const wallMaterial = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
+            
+            const backWall = new THREE.Mesh(wallGeometry, wallMaterial);
+            backWall.position.set(0, 2, 8);
+            scene.add(backWall);
+            
+            // Side walls
+            const sideWallGeometry = new THREE.PlaneGeometry(16, 5);
+            const leftWall = new THREE.Mesh(sideWallGeometry, wallMaterial);
+            leftWall.rotation.y = Math.PI / 2;
+            leftWall.position.set(-30, 2, 0);
+            scene.add(leftWall);
+            
+            const rightWall = new THREE.Mesh(sideWallGeometry, wallMaterial);
+            rightWall.rotation.y = -Math.PI / 2;
+            rightWall.position.set(30, 2, 0);
+            scene.add(rightWall);
+        }
+        
+        function createStationSigns() {
+            const signGeometry = new THREE.PlaneGeometry(4, 0.8);
+            const signMaterial = new THREE.MeshLambertMaterial({ color: 0x003366 });
+            
+            for (let i = 0; i < 3; i++) {
+                const sign = new THREE.Mesh(signGeometry, signMaterial);
+                sign.position.set(-20 + i * 20, 3, 7.9);
+                scene.add(sign);
+                
+                // Text (simplified - would need proper text rendering)
+                const textGeometry = new THREE.PlaneGeometry(3.5, 0.3);
+                const textMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff });
+                const text = new THREE.Mesh(textGeometry, textMaterial);
+                text.position.set(-20 + i * 20, 3, 7.95);
+                scene.add(text);
+                
+                stationSigns.push({ sign, text, station: stations[currentStation] });
+            }
+        }
+        
+        function createBenches() {
+            const benchGeometry = new THREE.BoxGeometry(3, 0.1, 0.8);
+            const benchMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            
+            for (let i = 0; i < 4; i++) {
+                const bench = new THREE.Mesh(benchGeometry, benchMaterial);
+                bench.position.set(-15 + i * 10, 0.5, 6);
+                bench.castShadow = true;
+                scene.add(bench);
+                
+                // Bench legs
+                for (let j = 0; j < 4; j++) {
+                    const legGeometry = new THREE.BoxGeometry(0.1, 0.5, 0.1);
+                    const leg = new THREE.Mesh(legGeometry, benchMaterial);
+                    leg.position.set(
+                        bench.position.x + (j < 2 ? -1.4 : 1.4),
+                        0.25,
+                        bench.position.z + (j % 2 === 0 ? -0.3 : 0.3)
+                    );
+                    leg.castShadow = true;
+                    scene.add(leg);
+                }
+            }
+        }
+        
+        function createTracks() {
+            // Rails
+            const railGeometry = new THREE.BoxGeometry(80, 0.05, 0.1);
+            const railMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            
+            const leftRail = new THREE.Mesh(railGeometry, railMaterial);
+            leftRail.position.set(0, -0.3, -5);
+            scene.add(leftRail);
+            
+            const rightRail = new THREE.Mesh(railGeometry, railMaterial);
+            rightRail.position.set(0, -0.3, -1);
+            scene.add(rightRail);
+            
+            // Railroad ties
+            for (let i = -40; i < 40; i += 2) {
+                const tieGeometry = new THREE.BoxGeometry(0.2, 0.1, 5);
+                const tieMaterial = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
+                const tie = new THREE.Mesh(tieGeometry, tieMaterial);
+                tie.position.set(i, -0.35, -3);
+                tie.castShadow = true;
+                scene.add(tie);
+            }
+            
+            // Track bed (gravel)
+            const bedGeometry = new THREE.BoxGeometry(80, 0.2, 6);
+            const bedMaterial = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+            const bed = new THREE.Mesh(bedGeometry, bedMaterial);
+            bed.position.set(0, -0.5, -3);
+            scene.add(bed);
+        }
+        
+        function createStationDetails() {
+            // Trash cans (empty)
+            const trashGeometry = new THREE.CylinderGeometry(0.3, 0.4, 0.8, 8);
+            const trashMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            
+            for (let i = 0; i < 3; i++) {
+                const trash = new THREE.Mesh(trashGeometry, trashMaterial);
+                trash.position.set(-20 + i * 20, 0.4, 7);
+                trash.castShadow = true;
+                scene.add(trash);
+            }
+            
+            // Support pillars
+            const pillarGeometry = new THREE.CylinderGeometry(0.2, 0.2, 4, 8);
+            const pillarMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            
+            for (let i = 0; i < 5; i++) {
+                const pillar = new THREE.Mesh(pillarGeometry, pillarMaterial);
+                pillar.position.set(-24 + i * 12, 2, 4);
+                pillar.castShadow = true;
+                scene.add(pillar);
+            }
+        }
+        
+        function createTunnels() {
+            // Left tunnel
+            const tunnelGeometry = new THREE.CylinderGeometry(3, 3, 100, 8, 1, true);
+            const tunnelMaterial = new THREE.MeshLambertMaterial({ 
+                color: 0x1a1a1a,
+                side: THREE.BackSide
+            });
+            
+            const leftTunnel = new THREE.Mesh(tunnelGeometry, tunnelMaterial);
+            leftTunnel.rotation.z = Math.PI / 2;
+            leftTunnel.position.set(-80, 1.5, -3);
+            scene.add(leftTunnel);
+            
+            const rightTunnel = new THREE.Mesh(tunnelGeometry, tunnelMaterial);
+            rightTunnel.rotation.z = Math.PI / 2;
+            rightTunnel.position.set(80, 1.5, -3);
+            scene.add(rightTunnel);
+        }
+        
+        function createTrains() {
+            // Sometimes a train is coming... sometimes it's not
+            if (Math.random() > 0.3) {
+                createDistantTrain();
+            }
+        }
+        
+        function createDistantTrain() {
+            const trainGeometry = new THREE.BoxGeometry(8, 2.5, 2.5);
+            const trainMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+            
+            const train = new THREE.Mesh(trainGeometry, trainMaterial);
+            train.position.set(Math.random() > 0.5 ? -60 : 60, 0.7, -3);
+            train.castShadow = true;
+            scene.add(train);
+            
+            // Headlight
+            const lightGeometry = new THREE.CircleGeometry(0.3, 8);
+            const lightMaterial = new THREE.MeshBasicMaterial({ color: 0xffffaa });
+            const headlight = new THREE.Mesh(lightGeometry, lightMaterial);
+            headlight.position.set(train.position.x, train.position.y, train.position.z + 1.3);
+            scene.add(headlight);
+            
+            trains.push({ train, headlight, direction: train.position.x < 0 ? 1 : -1 });
+        }
+        
+        function createLighting() {
+            // Ambient lighting (very dim)
+            const ambientLight = new THREE.AmbientLight(0x222222, 0.3);
+            scene.add(ambientLight);
+            
+            // Fluorescent lights (some working, some flickering, some dead)
+            for (let i = -25; i < 25; i += 5) {
+                const isWorking = Math.random() > 0.3;
+                const isFlickering = Math.random() > 0.7;
+                
+                if (isWorking) {
+                    const light = new THREE.PointLight(0xffffcc, isFlickering ? 0.4 : 0.8, 15);
+                    light.position.set(i, 3.5, 2);
+                    light.castShadow = true;
+                    light.shadow.mapSize.width = 512;
+                    light.shadow.mapSize.height = 512;
+                    scene.add(light);
+                    
+                    if (isFlickering) {
+                        // Add flickering behavior
+                        light.userData.flickering = true;
+                        light.userData.flickerTime = 0;
+                    }
+                }
+                
+                // Light fixture (always present, even if broken)
+                const fixtureGeometry = new THREE.BoxGeometry(2, 0.2, 0.5);
+                const fixtureMaterial = new THREE.MeshLambertMaterial({ 
+                    color: isWorking ? 0xaaaaaa : 0x333333 
+                });
+                const fixture = new THREE.Mesh(fixtureGeometry, fixtureMaterial);
+                fixture.position.set(i, 3.8, 2);
+                scene.add(fixture);
+            }
+        }
+        
+        function createAudio() {
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // 60Hz electrical hum
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.frequency.setValueAtTime(60, audioContext.currentTime);
+                oscillator.type = 'sine';
+                gainNode.gain.setValueAtTime(0.02, audioContext.currentTime);
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                oscillator.start();
+                
+                hum = { oscillator, gainNode };
+            } catch (e) {
+                console.log('Audio not available');
+            }
+        }
+        
+        function setupControls() {
+            document.addEventListener('keydown', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = true; break;
+                    case 'KeyS': moveBackward = true; break;
+                    case 'KeyA': moveLeft = true; break;
+                    case 'KeyD': moveRight = true; break;
+                    case 'Escape': 
+                        document.exitPointerLock();
+                        break;
+                }
+            });
+            
+            document.addEventListener('keyup', (event) => {
+                switch (event.code) {
+                    case 'KeyW': moveForward = false; break;
+                    case 'KeyS': moveBackward = false; break;
+                    case 'KeyA': moveLeft = false; break;
+                    case 'KeyD': moveRight = false; break;
+                }
+            });
+            
+            document.addEventListener('mousemove', (event) => {
+                if (!isLocked) return;
+                
+                const movementX = event.movementX || 0;
+                const movementY = event.movementY || 0;
+                
+                camera.rotation.y -= movementX * 0.002;
+                camera.rotation.x -= movementY * 0.002;
+                
+                // Clamp vertical rotation
+                camera.rotation.x = Math.max(-Math.PI/3, Math.min(Math.PI/3, camera.rotation.x));
+            });
+        }
+        
+        function updateMovement(delta) {
+            velocity.x -= velocity.x * 10.0 * delta;
+            velocity.z -= velocity.z * 10.0 * delta;
+            
+            direction.z = Number(moveForward) - Number(moveBackward);
+            direction.x = Number(moveRight) - Number(moveLeft);
+            direction.normalize();
+            
+            if (moveForward || moveBackward) velocity.z -= direction.z * 400.0 * delta;
+            if (moveLeft || moveRight) velocity.x -= direction.x * 400.0 * delta;
+            
+            // Apply movement relative to camera rotation
+            const forward = new THREE.Vector3(0, 0, -1);
+            forward.applyQuaternion(camera.quaternion);
+            forward.y = 0;
+            forward.normalize();
+            
+            const right = new THREE.Vector3();
+            right.crossVectors(forward, new THREE.Vector3(0, 1, 0));
+            
+            camera.position.addScaledVector(forward, velocity.z * delta);
+            camera.position.addScaledVector(right, velocity.x * delta);
+            
+            // Keep camera at standing height
+            camera.position.y = 1.6;
+            
+            // Boundary checking (keep on platform)
+            camera.position.x = Math.max(-28, Math.min(28, camera.position.x));
+            camera.position.z = Math.max(-2, Math.min(7, camera.position.z));
+        }
+        
+        function updateTrains(delta) {
+            trains.forEach((trainObj, index) => {
+                trainObj.train.position.x += trainObj.direction * 2 * delta;
+                trainObj.headlight.position.x = trainObj.train.position.x;
+                
+                // Remove trains that have gone too far
+                if (Math.abs(trainObj.train.position.x) > 100) {
+                    scene.remove(trainObj.train);
+                    scene.remove(trainObj.headlight);
+                    trains.splice(index, 1);
+                }
+            });
+            
+            // Sometimes add a new train
+            if (Math.random() < 0.001 && trains.length < 2) {
+                createDistantTrain();
+            }
+        }
+        
+        function updateLights(time) {
+            scene.traverse((object) => {
+                if (object.isPointLight && object.userData.flickering) {
+                    object.userData.flickerTime += time;
+                    const flicker = Math.sin(object.userData.flickerTime * 50) * 0.3 + 0.7;
+                    object.intensity = 0.4 * flicker;
+                }
+            });
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+            
+            updateMovement(delta);
+            updateTrains(delta);
+            updateLights(time);
+            
+            // Randomly change station signs
+            if (Math.random() < 0.001) {
+                currentStation = (currentStation + 1) % stations.length;
+                // In a real implementation, you'd update the text textures here
+            }
+            
+            renderer.render(scene, camera);
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        // Start the experience
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
