@@ -29,13 +29,42 @@
   }
   #interact.visible { opacity: 1; }
 
-  /* Log counter top right */
-  #log-counter {
+  /* Log counter + hint top right */
+  #top-hud {
     position: fixed; top: 20px; right: 20px;
-    color: #998860; font-size: 13px; z-index: 30; cursor: pointer;
-    opacity: 0.7; transition: opacity 0.2s; user-select: none;
+    z-index: 30; text-align: right; user-select: none;
+  }
+  #log-counter {
+    color: #998860; font-size: 13px; cursor: pointer;
+    opacity: 0.7; transition: opacity 0.2s;
   }
   #log-counter:hover { opacity: 1; }
+  #log-hint {
+    color: #665540; font-size: 10px; margin-top: 4px; opacity: 0.6;
+  }
+
+  /* ESC Menu */
+  #esc-menu {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.88); z-index: 600;
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+  }
+  #esc-menu.open { display: flex; }
+  #esc-menu h2 { color: #aa9960; font-size: 20px; margin-bottom: 30px; }
+  .menu-section { margin-bottom: 24px; text-align: center; }
+  .menu-section h3 { color: #887755; font-size: 13px; margin-bottom: 10px; }
+  .menu-controls {
+    color: #665544; font-size: 12px; line-height: 2;
+  }
+  .menu-controls span { color: #aa9960; }
+  .menu-btn {
+    display: block; width: 220px; margin: 8px auto; padding: 10px 0;
+    background: rgba(60,50,35,0.4); border: 1px solid rgba(100,90,60,0.25);
+    color: #998860; font-family: 'Courier New', monospace; font-size: 13px;
+    cursor: pointer; text-align: center; text-decoration: none;
+    transition: background 0.2s, color 0.2s;
+  }
+  .menu-btn:hover { background: rgba(80,70,50,0.5); color: #ccbb88; }
 
   /* Log viewer overlay */
   #log-overlay {
@@ -153,7 +182,29 @@
 <div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact · L for journal</span></div>
 <div id="hud">level 0</div>
 <div id="interact">press E to read</div>
-<div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
+<div id="top-hud">
+  <div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
+  <div id="log-hint">[ L ] open journal</div>
+</div>
+
+<div id="esc-menu">
+  <h2>DREAM SUBWAY</h2>
+  <div class="menu-section">
+    <h3>Controls</h3>
+    <div class="menu-controls">
+      <span>W A S D</span> — Move<br>
+      <span>Mouse</span> — Look around<br>
+      <span>E</span> — Pick up / read log<br>
+      <span>L</span> — Open journal<br>
+      <span>ESC</span> — Menu
+    </div>
+  </div>
+  <div class="menu-section">
+    <a class="menu-btn" onclick="closeEscMenu()">Resume</a>
+    <a class="menu-btn" href="https://github.com/EnzoImagines/dream-subway" target="_blank">GitHub</a>
+    <a class="menu-btn" href="https://x.com/EnzoImagines" target="_blank">𝕏 @EnzoImagines</a>
+  </div>
+</div>
 <div id="paper-dialog">
   <div id="paper-title"></div>
   <div id="paper-text"></div>
@@ -218,6 +269,17 @@ function renderLogList() {
     if (foundLogs.has(log.id)) div.onclick = () => openLogDetail(log.id);
     el.appendChild(div);
   }
+}
+let escMenuOpen = false;
+function openEscMenu() {
+  document.exitPointerLock();
+  document.getElementById('esc-menu').classList.add('open');
+  escMenuOpen = true;
+}
+function closeEscMenu() {
+  document.getElementById('esc-menu').classList.remove('open');
+  escMenuOpen = false;
+  document.body.requestPointerLock();
 }
 let storyOpen = false;
 function openStory() {
@@ -772,15 +834,27 @@ function initAudio(){
 let isWalking=false,stepPhase=0;
 function playStep(){
   if(!audioCtx)return;
-  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.1,audioCtx.sampleRate);
+  // Two-layer footstep: thud + scuff
+  const dur=0.15;
+  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*dur,audioCtx.sampleRate);
   const d=buf.getChannelData(0);
-  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/audioCtx.sampleRate*50)*0.2;
+  const isLeft=stepPhase%2===0;
+  const pitch=isLeft?1.0:0.85; // alternate pitch for L/R foot
+  for(let i=0;i<d.length;i++){
+    const t=i/audioCtx.sampleRate;
+    // Low thud
+    const thud=Math.sin(t*pitch*180*Math.PI*2)*Math.exp(-t*35)*0.3;
+    // Carpet scuff (filtered noise)
+    const scuff=(Math.random()*2-1)*Math.exp(-t*25)*0.12;
+    d[i]=thud+scuff;
+  }
   const src=audioCtx.createBufferSource();src.buffer=buf;
-  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=200+Math.random()*100;
-  const g=audioCtx.createGain();g.gain.value=0.1;
-  src.connect(f);f.connect(g);g.connect(masterGain);src.start();
+  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=180+Math.random()*80;
+  const g=audioCtx.createGain();g.gain.value=0.18;
+  const pan=audioCtx.createStereoPanner();pan.pan.value=isLeft?-0.15:0.15;
+  src.connect(f);f.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
 }
-function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,380+Math.random()*60+(stepPhase%2===0?0:40));}
+function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,350+Math.random()*50+(stepPhase%2===0?0:35));}
 
 // ─── CONTROLS ───
 const keys={};
@@ -794,8 +868,10 @@ addEventListener('keydown',e=>{
   if(e.key==='Escape'){
     if(paperOpen) closePaper();
     else if(storyOpen) closeStory();
+    else if(escMenuOpen) closeEscMenu();
     else if(document.getElementById('log-detail').classList.contains('open')) closeLogDetail();
     else if(document.getElementById('log-overlay').classList.contains('open')) closeLogOverlay();
+    else openEscMenu();
   }
 });
 addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
@@ -837,7 +913,7 @@ function init(){
   loadSavedLogs();
 
   document.addEventListener('click',()=>{
-    if(!overlayOpen&&!paperOpen&&!storyOpen){
+    if(!overlayOpen&&!paperOpen&&!storyOpen&&!escMenuOpen){
       document.body.requestPointerLock();initAudio();
       document.getElementById('prompt').classList.add('hidden');
     }
@@ -864,7 +940,7 @@ function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
-  if(!overlayOpen&&!paperOpen&&!storyOpen){
+  if(!overlayOpen&&!paperOpen&&!storyOpen&&!escMenuOpen){
     const speed=2.5,dir=new THREE.Vector3();
     if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
     if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
