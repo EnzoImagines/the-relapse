@@ -1,36 +1,46 @@
-# noclip.exe
+# The Relapse
 
-> *You didn't mean to end up here. Nobody does.*
+> *You got out once. At least, you think you did.*
 
 ## What is this?
 
-**noclip.exe** is an experimental web-based horror exploration built entirely in the browser. No downloads. No installs. Just a URL and the growing realization that you are not going to find your way back.
+**The Relapse** is an experimental browser-based psychological horror experience. No downloads. No installs. Just a URL and the slow, creeping realization that you've been here before.
 
-You've clipped through the boundaries of normal space into an infinite, procedurally generated labyrinth of yellowed wallpaper, damp carpet, and buzzing fluorescent lights. The hallways stretch endlessly in every direction. Some lights work. Most don't. The ones that flicker do so in patterns that almost mean something.
+You're standing in a hallway. Yellow wallpaper. Damp carpet. A fluorescent light buzzes overhead — the only one that works on this stretch. Your flashlight cuts a cone through the dark. You start walking. The corridor stretches ahead. You turn a corner. Then another. After a while, you look behind you.
 
-The corridors generate ahead of you as you walk. When you turn around, the path you came from no longer exists. New walls. New turns. New dead ends. The architecture reshuffles itself the moment it leaves your field of vision. There is no backtracking. There is no map. There is only forward.
+The way you came is gone.
+
+New walls. New corridors. A turn that wasn't there thirty seconds ago. You keep walking because there's nothing else to do. And somewhere, deep in the back of your mind, you realize — you recognize this carpet. You've walked under these lights before. You've smelled this air before.
+
+You got out. You're sure you got out. But here you are again.
+
+**This is the relapse.**
 
 ## The Logs
 
-Scattered throughout the labyrinth are handwritten logs — 50 entries from someone named Jason who was here before you. Found on tables, dropped on the floor, left in corridors that may not exist by the time you finish reading them.
+You're not the first person to walk these halls.
 
-The logs tell a story. Not all at once. You find them out of order, in random places, at random times. Some you'll find quickly. Others may take hours of wandering. Each one peels back another layer of what this place is, how it works, and whether there's any way out.
+Scattered across the labyrinth are 50 handwritten logs from someone named Jason. Dropped on floors. Left on tables. Abandoned in corridors that may not exist by the time you finish reading them.
 
-Press **L** to open the journal. Found entries are readable. Unfound entries are blurred — you can see they exist, but you can't read them until you find the physical log in the world. The question isn't whether you'll find them all. It's whether you'll still want to keep looking.
+Jason mapped this place. Jason tried to understand it. Jason tried to leave. His logs tell the full story — not in order, not in sequence. You find them where the place decides to put them. Some quickly. Some after hours of searching. Each one reveals a little more about what's happening here, and a little less about whether escape is possible.
+
+Press **L** to open the journal. Entries you've found are readable. The rest are visible but blurred — proof that there's more to the story, just out of reach. Collect them all to piece together the full truth. Or don't. The hallways don't care either way.
 
 ## The Experience
 
-- **Infinite procedural generation** — corridors, turns, and junctions that never repeat and never end
-- **Reality shifts behind you** — the world restructures itself when you're not looking
-- **Flashlight-dependent exploration** — the rooms are dark, your flashlight is your lifeline
-- **50-entry narrative** — a complete story hidden across an infinite space
-- **Procedural artwork** — paintings and frames on walls, each one unique, each one slightly wrong
-- **Spatial audio design** — electrical hum, water drips, distant metallic groaning, ambient dread
-- **Persistent progress** — found logs save locally, pick up where you left off
+- **Infinite procedural corridors** — the labyrinth generates itself as you walk, endless and unrepeating
+- **Reality shifts behind you** — turn around and the architecture has rewritten itself
+- **Flashlight-driven exploration** — darkness is the default, your light is everything
+- **50-entry hidden narrative** — a complete story scattered across an impossible space
+- **Procedural artwork** — paintings on walls, each unique, each slightly unsettling
+- **Layered soundscape** — electrical hum, water drips, metallic groaning, ambient music
+- **Persistent progress** — found logs save between sessions
 
 ## How to Play
 
-Open **[noclip.exe](https://enzoimagines.github.io/noclip-exe/)** in any modern browser. Click to enter. That's it.
+Open **[The Relapse](https://enzoimagines.github.io/the-relapse/)** in any modern browser. Click to enter.
+
+Best experienced in a dark room with headphones.
 
 | Control | Action |
 |---------|--------|
@@ -40,28 +50,29 @@ Open **[noclip.exe](https://enzoimagines.github.io/noclip-exe/)** in any modern 
 | `L` | Open journal |
 | `ESC` | Pause menu |
 
-Works best in a dark room with headphones.
-
 ## Technical
 
 Built from scratch with [Three.js](https://threejs.org/). No frameworks. No game engine. No server. Just geometry, fog, and the uncanny.
 
-- Edge-based procedural wall generation with corridor region system
-- Versioned chunk architecture — cells regenerate with new layouts when they leave view
-- Shared geometry pool for zero-allocation chunk building
-- Throttled build/destroy pipeline (max 4 builds per frame) for consistent framerate
-- Canvas-generated procedural textures (carpet, walls, ceiling tiles, paintings)
-- Web Audio API procedural soundscape
-- ACES filmic tone mapping + linear fog
+- Corridor region generation system with versioned chunk architecture
+- Edge-based procedural walls — cells regenerate new layouts when they leave your field of vision
+- Shared geometry pool with throttled build/destroy pipeline for consistent framerate
+- Procedural canvas textures (carpet, wallpaper, ceiling tiles, oil paintings)
+- Web Audio API soundscape — all audio is generated or streamed in-browser
+- ACES filmic tone mapping, linear fog, SpotLight flashlight with real-time cone
 
-## The Idea
+## Why?
 
-There's a theory that liminal spaces — empty hallways, abandoned malls, hotel corridors at 3am — feel uncanny because they resemble the spaces your brain generates during memory consolidation. Places that are *almost* real. Familiar but hollow. Recognizable but empty.
+There's a theory that liminal spaces — empty hallways, abandoned malls, hotel corridors at 3am — feel wrong because they resemble the architecture your brain constructs during memory consolidation. Not real places, but the scaffolding of places. Familiar geometry with nothing inside.
 
-**noclip.exe** is an attempt to build one of those spaces and let you walk through it. Not as a game with objectives, but as an experience. The logs give you a reason to keep going. The shifting architecture ensures you can never feel safe. The darkness makes every corner a question.
+**The Relapse** takes that idea and asks: what if you couldn't leave? What if every time you thought you'd escaped, you were just walking deeper into the same structure? What if the architecture itself was the thing you kept relapsing into?
 
-You're not supposed to be here. But now that you are — keep walking.
+The logs give you something to search for. The shifting walls make sure you can never feel oriented. The darkness makes every step forward an act of faith.
+
+You've been here before. You'll be here again.
+
+Keep walking.
 
 ---
 
-**[Play it now](https://enzoimagines.github.io/noclip-exe/)** · **[𝕏 @EnzoImagines](https://x.com/EnzoImagines)** · **[GitHub](https://github.com/EnzoImagines/noclip-exe)**
+**[Play now](https://enzoimagines.github.io/the-relapse/)** · **[𝕏 @EnzoImagines](https://x.com/EnzoImagines)**
