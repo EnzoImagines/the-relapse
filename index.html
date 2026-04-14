@@ -65,6 +65,27 @@
     transition: background 0.2s, color 0.2s;
   }
   .menu-btn:hover { background: rgba(80,70,50,0.5); color: #ccbb88; }
+  .menu-volume { margin: 16px 0; }
+  .menu-volume label { color: #887755; font-size: 12px; display: block; margin-bottom: 8px; }
+  #vol-slider {
+    -webkit-appearance: none; width: 180px; height: 4px;
+    background: rgba(100,90,60,0.3); border-radius: 2px; outline: none;
+  }
+  #vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px;
+    background: #aa9960; border-radius: 50%; cursor: pointer;
+  }
+  #vol-slider::-moz-range-thumb {
+    width: 14px; height: 14px;
+    background: #aa9960; border-radius: 50%; cursor: pointer; border: none;
+  }
+  #mute-btn {
+    background: none; border: 1px solid rgba(100,90,60,0.25);
+    color: #998860; font-family: 'Courier New', monospace; font-size: 11px;
+    padding: 5px 14px; cursor: pointer; margin-top: 8px;
+    transition: background 0.2s;
+  }
+  #mute-btn:hover { background: rgba(80,70,50,0.3); }
 
   /* Log viewer overlay */
   #log-overlay {
@@ -198,6 +219,13 @@
       <span>L</span> — Open journal<br>
       <span>ESC</span> — Menu
     </div>
+  </div>
+  <div class="menu-section menu-volume">
+    <label>Volume</label>
+    <input type="range" id="vol-slider" min="0" max="1" step="0.05" value="0.5"
+      oninput="setVolume(parseFloat(this.value))">
+    <br>
+    <button id="mute-btn" onclick="toggleMute()">🔊 Mute</button>
   </div>
   <div class="menu-section">
     <a class="menu-btn" onclick="closeEscMenu()">Resume</a>
@@ -829,32 +857,49 @@ function initAudio(){
   },10000);
 
   humStarted=true;
+  startMusic();
 }
 
-let isWalking=false,stepPhase=0;
-function playStep(){
-  if(!audioCtx)return;
-  // Two-layer footstep: thud + scuff
-  const dur=0.15;
-  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*dur,audioCtx.sampleRate);
-  const d=buf.getChannelData(0);
-  const isLeft=stepPhase%2===0;
-  const pitch=isLeft?1.0:0.85; // alternate pitch for L/R foot
-  for(let i=0;i<d.length;i++){
-    const t=i/audioCtx.sampleRate;
-    // Low thud
-    const thud=Math.sin(t*pitch*180*Math.PI*2)*Math.exp(-t*35)*0.3;
-    // Carpet scuff (filtered noise)
-    const scuff=(Math.random()*2-1)*Math.exp(-t*25)*0.12;
-    d[i]=thud+scuff;
-  }
-  const src=audioCtx.createBufferSource();src.buffer=buf;
-  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=180+Math.random()*80;
-  const g=audioCtx.createGain();g.gain.value=0.18;
-  const pan=audioCtx.createStereoPanner();pan.pan.value=isLeft?-0.15:0.15;
-  src.connect(f);f.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
+// Footsteps removed
+
+// Background music
+let bgMusic=null, musicStarted=false;
+function startMusic(){
+  if(musicStarted) return;
+  bgMusic=new Audio('ambient.mp3');
+  bgMusic.loop=true;
+  bgMusic.volume=parseFloat(localStorage.getItem('dreamSubwayVol')||'0.5');
+  bgMusic.play().catch(()=>{});
+  musicStarted=true;
+  // Update slider if it exists
+  const sl=document.getElementById('vol-slider');
+  if(sl) sl.value=bgMusic.volume;
+  updateMuteBtn();
 }
-function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,350+Math.random()*50+(stepPhase%2===0?0:35));}
+function setVolume(v){
+  if(bgMusic) bgMusic.volume=v;
+  localStorage.setItem('dreamSubwayVol',v);
+  updateMuteBtn();
+}
+function toggleMute(){
+  if(!bgMusic) return;
+  if(bgMusic.volume>0){
+    bgMusic.dataset.prevVol=bgMusic.volume;
+    bgMusic.volume=0;
+    document.getElementById('vol-slider').value=0;
+  } else {
+    const prev=parseFloat(bgMusic.dataset.prevVol||0.5);
+    bgMusic.volume=prev;
+    document.getElementById('vol-slider').value=prev;
+  }
+  localStorage.setItem('dreamSubwayVol',bgMusic.volume);
+  updateMuteBtn();
+}
+function updateMuteBtn(){
+  const btn=document.getElementById('mute-btn');
+  if(!btn||!bgMusic) return;
+  btn.textContent=bgMusic.volume>0?'🔊 Mute':'🔇 Unmute';
+}
 
 // ─── CONTROLS ───
 const keys={};
@@ -952,8 +997,7 @@ function animate(){
     if(canMove(camera.position.x,nz))camera.position.z=nz;
     camera.position.y=1.5+(moving?Math.sin(t*8)*0.015:0);
     camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
-    if(moving&&!isWalking){isWalking=true;stepLoop();}
-    else if(!moving)isWalking=false;
+    // (footsteps removed)
   }
 
   // Flashlight follows camera
