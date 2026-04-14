@@ -531,11 +531,11 @@ function cellWalls(cx,cz){
 // Deterministic per-cell: ~8% of cells get a log
 function cellLogId(cx,cz,ver){
   // No logs near spawn
-  if(Math.abs(cx)+Math.abs(cz)<8) return -1;
+  if(Math.abs(cx)+Math.abs(cz)<5) return -1;
   let h=(cx*123456789+cz*987654321+ver*555555)|0;
   h=(h^(h>>>13))*1274126177;h=(h^(h>>>16));
   const r=((h>>>0)%10000)/10000;
-  if(r>0.02) return -1; // 2% chance — much rarer
+  if(r>0.06) return -1; // 6% chance
   return (((h>>>0)%50))+1;
 }
 
