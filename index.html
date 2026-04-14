@@ -35,22 +35,31 @@ import * as THREE from 'three';
 let scene, camera, renderer, clock;
 let yaw = 0, pitch = 0;
 const TILE = 4.0, WALL_H = 3.0;
-const GEN_RADIUS = 4;    // generate chunks this far ahead
-const KILL_BEHIND = 3;   // remove chunks this far behind player's facing direction
-const KILL_DISTANCE = 6; // remove chunks this far from player overall
+const GEN_RADIUS = 4;
+const KILL_BEHIND = 3;
+const KILL_DISTANCE = 6;
 
-// ─── SEEDED RNG ───
-function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-function hashCell(x,z){return mulberry32(x*73856093^z*19349663);}
+// ─── DETERMINISTIC HASH ───
+// Edges are keyed by the two cells they separate. We always normalize the key
+// so the same edge gives the same result regardless of which side asks.
+function hash(a,b){a=a|0;b=b|0;let h=a*374761393+b*668265263;h=(h^(h>>>13))*1274126177;return((h^(h>>>16))>>>0)/4294967296;}
+
+// Is there a wall on the edge between (x1,z1) and (x2,z2)?
+// ~30% chance of wall on any interior edge = mostly open, some corridors
+function edgeHasWall(x1,z1,x2,z2){
+  // Normalize edge key so (A,B) == (B,A)
+  let a,b;
+  if(x1<x2||(x1===x2&&z1<z2)){a=x1*73856093^z1*19349663;b=x2*73856093^z2*19349663;}
+  else{a=x2*73856093^z2*19349663;b=x1*73856093^z1*19349663;}
+  return hash(a,b) < 0.30;
+}
 
 // ─── CHUNK SYSTEM ───
-const chunks = new Map(); // key "x,z" -> {meshes:[], lights:[], open:{n,s,e,w}}
-const visited = new Map(); // key -> generation data so revisits are consistent... except we delete behind
+const chunks = new Map();
 let playerChunkX = 0, playerChunkZ = 0;
-let prevPlayerChunkX = null, prevPlayerChunkZ = null;
 let stepCount = 0;
 
-// ─── TEXTURES ───
+// ─── TEXTURES (shared) ───
 let carpetMat, wallMat, ceilingMat;
 
 function makeCarpet(){
@@ -58,120 +67,70 @@ function makeCarpet(){
   x.fillStyle='#8a7a55';x.fillRect(0,0,256,256);
   for(let i=0;i<8000;i++){const b=100+Math.random()*40;x.fillStyle=`rgb(${b},${b*0.88|0},${b*0.6|0})`;x.fillRect(Math.random()*256,Math.random()*256,1+Math.random()*2,1+Math.random()*2);}
   for(let s=0;s<4;s++){x.beginPath();x.arc(Math.random()*256,Math.random()*256,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(70,60,40,0.25)';x.fill();}
-  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(1,1);
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.95});
 }
-
 function makeWall(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#c5b890';x.fillRect(0,0,256,256);
   for(let i=0;i<20;i++){x.fillStyle=`rgba(100,90,70,${0.03+Math.random()*0.08})`;x.fillRect(Math.random()*256,0,1+Math.random()*3,256);}
-  // Subtle water stains near top
   for(let s=0;s<2;s++){const gx=Math.random()*256;x.beginPath();x.arc(gx,Math.random()*60,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(80,75,50,0.1)';x.fill();}
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
 }
-
 function makeCeiling(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#b8ad95';x.fillRect(0,0,256,256);
   x.strokeStyle='rgba(80,70,55,0.3)';x.lineWidth=1;
   x.strokeRect(2,2,252,252);x.strokeRect(128,2,126,252);x.strokeRect(2,128,252,126);
   for(let s=0;s<2;s++){x.beginPath();x.arc(Math.random()*256,Math.random()*256,15+Math.random()*25,0,Math.PI*2);x.fillStyle='rgba(70,60,45,0.15)';x.fill();}
-  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(1,1);
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
   return new THREE.MeshStandardMaterial({map:t,roughness:0.85});
 }
 
-function initMaterials(){
-  carpetMat=makeCarpet();wallMat=makeWall();ceilingMat=makeCeiling();
-}
-
-// ─── ROOM GENERATION ───
-// Each cell can connect N/S/E/W. We ensure connectivity forward and randomize sides.
-// When generating, we look at what neighbors exist and ensure openings match.
-
-function getOpenings(cx,cz){
-  const rng=hashCell(cx,cz);
-  // Always open in at least 2 directions
-  let n=rng()>0.3, s=rng()>0.3, e=rng()>0.3, w=rng()>0.3;
-  // Ensure at least 2 openings
-  const dirs=[n,s,e,w];
-  const open=dirs.filter(Boolean).length;
-  if(open<2){
-    const closed=[];
-    if(!n)closed.push(0);if(!s)closed.push(1);if(!e)closed.push(2);if(!w)closed.push(3);
-    for(let i=0;i<2-open;i++){
-      const pick=closed.splice(Math.floor(rng()*closed.length),1)[0];
-      if(pick===0)n=true;else if(pick===1)s=true;else if(pick===2)e=true;else w=true;
-    }
-  }
-  return {n,s,e,w};
-}
-
-function shouldExist(cx,cz){
-  // A cell exists if it's reachable — use hash to decide, but bias toward existing
-  const rng=hashCell(cx,cz);
-  return rng()>0.15; // 85% chance a cell exists
-}
-
-function isOpen(cx,cz,dir){
-  if(!shouldExist(cx,cz)) return false;
-  const o=getOpenings(cx,cz);
-  return o[dir];
-}
-
-function hasWall(cx,cz,dir){
-  // Wall exists if this cell is closed on that side, OR neighbor doesn't exist/is closed on opposite
-  if(!shouldExist(cx,cz)) return true;
-  const o=getOpenings(cx,cz);
-  if(!o[dir]) return true;
-  // Check neighbor
-  const nd={n:[0,-1,'s'],s:[0,1,'n'],e:[1,0,'w'],w:[-1,0,'e']}[dir];
-  const nx=cx+nd[0],nz=cz+nd[1];
-  if(!shouldExist(nx,nz)) return true;
-  const no=getOpenings(nx,nz);
-  if(!no[nd[2]]) return true;
-  return false;
-}
-
+// ─── BUILD CHUNK ───
 function buildChunk(cx,cz){
   const key=`${cx},${cz}`;
   if(chunks.has(key)) return;
-  if(!shouldExist(cx,cz)) return;
 
   const meshes=[], lights=[];
   const wx=cx*TILE, wz=cz*TILE;
-  const rng=hashCell(cx,cz);
 
   // Floor
   const f=new THREE.Mesh(new THREE.PlaneGeometry(TILE,TILE),carpetMat);
-  f.rotation.x=-Math.PI/2;f.position.set(wx,0,wz);
-  scene.add(f);meshes.push(f);
+  f.rotation.x=-Math.PI/2;f.position.set(wx,0,wz);scene.add(f);meshes.push(f);
 
   // Ceiling
   const c=new THREE.Mesh(new THREE.PlaneGeometry(TILE,TILE),ceilingMat);
-  c.rotation.x=Math.PI/2;c.position.set(wx,WALL_H,wz);
-  scene.add(c);meshes.push(c);
+  c.rotation.x=Math.PI/2;c.position.set(wx,WALL_H,wz);scene.add(c);meshes.push(c);
 
-  // Walls
-  const wallDefs=[
-    {dir:'n',rx:0,rz:-TILE/2,ry:0},
-    {dir:'s',rx:0,rz:TILE/2,ry:Math.PI},
-    {dir:'e',rx:TILE/2,rz:0,ry:-Math.PI/2},
-    {dir:'w',rx:-TILE/2,rz:0,ry:Math.PI/2},
-  ];
-  for(const wd of wallDefs){
-    if(hasWall(cx,cz,wd.dir)){
-      const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
-      w.position.set(wx+wd.rx,WALL_H/2,wz+wd.rz);w.rotation.y=wd.ry;
-      scene.add(w);meshes.push(w);
-    }
+  // Walls — check each edge
+  // North wall: edge between (cx,cz) and (cx,cz-1)
+  if(edgeHasWall(cx,cz,cx,cz-1)){
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
+    w.position.set(wx,WALL_H/2,wz-TILE/2);scene.add(w);meshes.push(w);
+  }
+  // South wall
+  if(edgeHasWall(cx,cz,cx,cz+1)){
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
+    w.position.set(wx,WALL_H/2,wz+TILE/2);w.rotation.y=Math.PI;scene.add(w);meshes.push(w);
+  }
+  // West wall
+  if(edgeHasWall(cx,cz,cx-1,cz)){
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
+    w.position.set(wx-TILE/2,WALL_H/2,wz);w.rotation.y=Math.PI/2;scene.add(w);meshes.push(w);
+  }
+  // East wall
+  if(edgeHasWall(cx,cz,cx+1,cz)){
+    const w=new THREE.Mesh(new THREE.PlaneGeometry(TILE,WALL_H),wallMat);
+    w.position.set(wx+TILE/2,WALL_H/2,wz);w.rotation.y=-Math.PI/2;scene.add(w);meshes.push(w);
   }
 
-  // Fluorescent light fixture — only every other room gets an actual PointLight
-  const lightWorking = rng() > 0.1;
-  const flickering = lightWorking && rng() > 0.9; // rare flicker
-  const hasPointLight = lightWorking && (Math.abs(cx)+Math.abs(cz))%2===0; // only half get real lights
+  // Light fixture — every other room gets a real PointLight
+  const cellHash = hash(cx*31,cz*37);
+  const lightWorking = cellHash > 0.08;
+  const hasReal = lightWorking && (Math.abs(cx)+Math.abs(cz))%2===0;
+  const flickering = hasReal && cellHash > 0.92; // ~8% of lit rooms flicker
 
   const tube=new THREE.Mesh(new THREE.BoxGeometry(1.2,0.05,0.12),
     new THREE.MeshStandardMaterial({
@@ -181,15 +140,10 @@ function buildChunk(cx,cz){
     }));
   tube.position.set(wx,WALL_H-0.05,wz);scene.add(tube);meshes.push(tube);
 
-  if(hasPointLight){
+  if(hasReal){
     const l=new THREE.PointLight(0xffeedd,1.0,TILE*2.5);
-    l.position.set(wx,WALL_H-0.12,wz);
-    scene.add(l);lights.push(l);
-    if(flickering){
-      l.userData.flickering=true;
-      l.userData.phase=rng()*Math.PI*2;
-      l.userData.tube=tube;
-    }
+    l.position.set(wx,WALL_H-0.12,wz);scene.add(l);lights.push(l);
+    if(flickering){l.userData.flickering=true;l.userData.phase=cellHash*Math.PI*6;l.userData.tube=tube;}
   }
 
   chunks.set(key,{meshes,lights,cx,cz});
@@ -199,68 +153,51 @@ function removeChunk(key){
   const chunk=chunks.get(key);
   if(!chunk) return;
   for(const m of chunk.meshes){scene.remove(m);if(m.geometry)m.geometry.dispose();}
-  for(const l of chunk.lights){scene.remove(l);}
+  for(const l of chunk.lights) scene.remove(l);
   chunks.delete(key);
 }
 
 function generateAround(px,pz){
-  // Generate in radius
-  for(let dx=-GEN_RADIUS;dx<=GEN_RADIUS;dx++){
+  for(let dx=-GEN_RADIUS;dx<=GEN_RADIUS;dx++)
     for(let dz=-GEN_RADIUS;dz<=GEN_RADIUS;dz++){
       if(dx*dx+dz*dz>GEN_RADIUS*GEN_RADIUS) continue;
       buildChunk(px+dx,pz+dz);
     }
-  }
 }
 
 function cullBehind(px,pz){
-  // Get player's forward direction in chunk space
   const fwd=new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
-  const fwdX=fwd.x, fwdZ=fwd.z;
-
   const toRemove=[];
   for(const[key,chunk]of chunks){
-    const dx=chunk.cx-px, dz=chunk.cz-pz;
+    const dx=chunk.cx-px,dz=chunk.cz-pz;
     const dist=Math.sqrt(dx*dx+dz*dz);
-
-    // Remove if too far away overall
-    if(dist>KILL_DISTANCE){
-      toRemove.push(key);
-      continue;
-    }
-
-    // Remove if behind player and far enough
+    if(dist>KILL_DISTANCE){toRemove.push(key);continue;}
     if(dist>KILL_BEHIND){
-      // Dot product with forward direction
-      const dot=(dx*fwdX+dz*fwdZ)/Math.max(dist,0.01);
-      if(dot<-0.3){ // Behind player
-        toRemove.push(key);
-      }
+      const dot=(dx*fwd.x+dz*fwd.z)/Math.max(dist,0.01);
+      if(dot<-0.3) toRemove.push(key);
     }
   }
-
   for(const key of toRemove) removeChunk(key);
 }
 
 // ─── COLLISION ───
+function wallBlocks(x,z,dir){
+  const cx=Math.round(x/TILE),cz=Math.round(z/TILE);
+  if(dir==='n') return edgeHasWall(cx,cz,cx,cz-1);
+  if(dir==='s') return edgeHasWall(cx,cz,cx,cz+1);
+  if(dir==='w') return edgeHasWall(cx,cz,cx-1,cz);
+  if(dir==='e') return edgeHasWall(cx,cz,cx+1,cz);
+  return false;
+}
+
 function canMove(x,z){
-  const cx=Math.round(x/TILE), cz=Math.round(z/TILE);
-  // Check if target cell exists
-  if(!chunks.has(`${cx},${cz}`) && !shouldExist(cx,cz)) return false;
-
-  // Check wall collisions with neighboring cells
+  const cx=Math.round(x/TILE),cz=Math.round(z/TILE);
+  const lx=x-cx*TILE, lz=z-cz*TILE;
   const m=0.35;
-  const localX=x-cx*TILE, localZ=z-cz*TILE;
-
-  // Near north wall
-  if(localZ<-TILE/2+m && hasWall(cx,cz,'n')) return false;
-  // Near south wall
-  if(localZ>TILE/2-m && hasWall(cx,cz,'s')) return false;
-  // Near east wall
-  if(localX>TILE/2-m && hasWall(cx,cz,'e')) return false;
-  // Near west wall
-  if(localX<-TILE/2+m && hasWall(cx,cz,'w')) return false;
-
+  if(lz<-TILE/2+m && wallBlocks(x,z,'n')) return false;
+  if(lz>TILE/2-m && wallBlocks(x,z,'s')) return false;
+  if(lx<-TILE/2+m && wallBlocks(x,z,'w')) return false;
+  if(lx>TILE/2-m && wallBlocks(x,z,'e')) return false;
   return true;
 }
 
@@ -272,19 +209,16 @@ function initAudio(){
   masterGain=audioCtx.createGain();masterGain.gain.value=0.5;
   masterGain.connect(audioCtx.destination);
 
-  // 60Hz hum
   const h=audioCtx.createOscillator();h.type='sawtooth';h.frequency.value=60;
   const hg=audioCtx.createGain();hg.gain.value=0.01;
   const hf=audioCtx.createBiquadFilter();hf.type='lowpass';hf.frequency.value=150;
   h.connect(hf);hf.connect(hg);hg.connect(masterGain);h.start();
 
-  // Fluorescent buzz
   const buzz=audioCtx.createOscillator();buzz.type='square';buzz.frequency.value=120;
   const buzzG=audioCtx.createGain();buzzG.gain.value=0.005;
   const buzzF=audioCtx.createBiquadFilter();buzzF.type='bandpass';buzzF.frequency.value=240;buzzF.Q.value=8;
   buzz.connect(buzzF);buzzF.connect(buzzG);buzzG.connect(masterGain);buzz.start();
 
-  // Drips
   setInterval(()=>{
     if(Math.random()>0.4)return;
     const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.12,audioCtx.sampleRate);
@@ -296,7 +230,6 @@ function initAudio(){
     src.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
   },4000);
 
-  // Distant metallic
   setInterval(()=>{
     if(Math.random()>0.3)return;
     const dur=0.6+Math.random()*0.4;
@@ -324,11 +257,7 @@ function playStep(){
   const g=audioCtx.createGain();g.gain.value=0.1;
   src.connect(f);f.connect(g);g.connect(masterGain);src.start();
 }
-function stepLoop(){
-  if(!isWalking)return;
-  playStep();stepPhase++;
-  setTimeout(stepLoop,380+Math.random()*60+(stepPhase%2===0?0:40));
-}
+function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,380+Math.random()*60+(stepPhase%2===0?0:40));}
 
 // ─── CONTROLS ───
 const keys={};
@@ -339,7 +268,7 @@ addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
 function init(){
   scene=new THREE.Scene();
   scene.background=new THREE.Color(0x1a1708);
-  scene.fog=new THREE.FogExp2(0x1a1708,0.04);
+  scene.fog=new THREE.FogExp2(0x1a1708,0.045);
   clock=new THREE.Clock();
 
   renderer=new THREE.WebGLRenderer({antialias:true});
@@ -353,15 +282,12 @@ function init(){
   camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
   camera.position.set(0,1.6,0);
 
-  // Warm ambient (the backrooms are lit, just... wrong)
   scene.add(new THREE.AmbientLight(0xffe8c0,0.5));
 
-  initMaterials();
+  carpetMat=makeCarpet();wallMat=makeWall();ceilingMat=makeCeiling();
 
-  // Generate initial area
   generateAround(0,0);
 
-  // Events
   document.addEventListener('click',()=>{
     document.body.requestPointerLock();initAudio();
     document.getElementById('prompt').classList.add('hidden');
@@ -387,56 +313,40 @@ function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
-  // Movement
   const speed=2.8,dir=new THREE.Vector3();
   if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
   if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
   const moving=dir.length()>0.01;
   dir.normalize().multiplyScalar(speed*dt);
   dir.applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
-  const nx=camera.position.x+dir.x, nz=camera.position.z+dir.z;
+  const nx=camera.position.x+dir.x,nz=camera.position.z+dir.z;
   if(canMove(nx,camera.position.z))camera.position.x=nx;
   if(canMove(camera.position.x,nz))camera.position.z=nz;
 
   camera.position.y=1.6+(moving?Math.sin(t*8)*0.02:0);
   camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
 
-  // Footsteps
   if(moving&&!isWalking){isWalking=true;stepLoop();}
   else if(!moving)isWalking=false;
 
-  // Chunk management
   const newCX=Math.round(camera.position.x/TILE);
   const newCZ=Math.round(camera.position.z/TILE);
   if(newCX!==playerChunkX||newCZ!==playerChunkZ){
-    prevPlayerChunkX=playerChunkX;prevPlayerChunkZ=playerChunkZ;
-    playerChunkX=newCX;playerChunkZ=newCZ;
-    stepCount++;
-
+    playerChunkX=newCX;playerChunkZ=newCZ;stepCount++;
     generateAround(playerChunkX,playerChunkZ);
-
-    // Start culling behind after a few steps
-    if(stepCount>3){
-      cullBehind(playerChunkX,playerChunkZ);
-    }
-
+    if(stepCount>3) cullBehind(playerChunkX,playerChunkZ);
     document.getElementById('hud').textContent=`level ${Math.abs(playerChunkX+playerChunkZ*7)%100}`;
   }
 
-  // Flicker lights
-  for(const[key,chunk]of chunks){
-    for(const l of chunk.lights){
+  // Flicker
+  for(const[,chunk]of chunks)
+    for(const l of chunk.lights)
       if(l.userData.flickering){
-        const fl=Math.sin(t*15+l.userData.phase)*Math.sin(t*23+l.userData.phase*2);
-        const on=fl>-0.3;
-        l.intensity=on?0.5+Math.random()*0.3:0;
-        if(l.userData.tube){
-          l.userData.tube.material.emissiveIntensity=on?0.6:0;
-          l.userData.tube.material.color.set(on?0xffffee:0x333333);
-        }
+        const fl=Math.sin(t*12+l.userData.phase)*Math.sin(t*19+l.userData.phase*2);
+        const on=fl>-0.2;
+        l.intensity=on?0.8+Math.random()*0.2:0;
+        if(l.userData.tube){l.userData.tube.material.emissiveIntensity=on?0.8:0;l.userData.tube.material.color.set(on?0xffffee:0x333333);}
       }
-    }
-  }
 
   renderer.render(scene,camera);
 }
