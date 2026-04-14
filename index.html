@@ -255,15 +255,52 @@ function getVersion(cx,cz){ const k=`${cx},${cz}`; if(!chunkVersions.has(k))chun
 function bumpVersion(cx,cz){ const k=`${cx},${cz}`; const v=(chunkVersions.get(k)||0)+1; chunkVersions.set(k,v); return v; }
 
 function edgeHasWall(x1,z1,x2,z2){
-  // Guarantee spawn area is open — no walls within 2 cells of origin at version 0
+  // Guarantee spawn area open
   const d1=Math.abs(x1)+Math.abs(z1), d2=Math.abs(x2)+Math.abs(z2);
   const v1=getVersion(x1,z1),v2=getVersion(x2,z2);
-  if(d1<=2 && d2<=2 && v1===0 && v2===0) return false;
+  if(d1<=3 && d2<=3 && v1===0 && v2===0) return false;
 
+  // ─── CORRIDOR REGION SYSTEM ───
+  // Divide world into regions of ~7 cells. Each region has a corridor direction.
+  // Walls ALONG the corridor are rare (keep it open for walking).
+  // Walls ACROSS the corridor are common (create corridor walls).
+  // At region boundaries, walls are reduced so corridors connect.
+  const regionSize = 7;
+  const off = 50000; // offset to handle negatives
+  const rx1=Math.floor((x1+off)/regionSize), rz1=Math.floor((z1+off)/regionSize);
+  const rx2=Math.floor((x2+off)/regionSize), rz2=Math.floor((z2+off)/regionSize);
+
+  // Region corridor direction — seeded by region coords + versions of both cells
+  let rh=(rx1*48271+rz1*16807+v1*31+v2*37)|0;
+  rh=(rh^(rh>>>13))*1274126177; rh=rh^(rh>>>16);
+  const corridorNS = ((rh>>>0)%2===0); // true = N-S corridor, false = E-W
+
+  // What does this edge block?
+  const blocksNS = (z1!==z2); // cells stacked N-S → wall blocks N-S travel
+  const blocksEW = (x1!==x2); // cells side-by-side → wall blocks E-W travel
+
+  let wallChance;
+  if(corridorNS){
+    wallChance = blocksNS ? 0.06 : 0.82; // Keep N-S open, wall off sides
+  } else {
+    wallChance = blocksEW ? 0.06 : 0.82; // Keep E-W open, wall off sides
+  }
+
+  // Region boundary — create openings between different corridor sections
+  if(rx1!==rx2 || rz1!==rz2){
+    wallChance = 0.25; // boundary = more open, creates turns/junctions
+  }
+
+  // Rare open room: ~3% of cells have reduced walls everywhere
+  let oh=(x1*999961+z1*999979+x2*999983+z2*999931+v1*7+v2*11)|0;
+  oh=(oh^(oh>>>15))*2654435761; oh=oh^(oh>>>13);
+  if(((oh>>>0)%100)<3) wallChance=0.1;
+
+  // Final deterministic hash for this specific edge
   let h=(x1*374761393+z1*668265263+x2*982451653+z2*271828183+v1*314159+v2*161803)|0;
   h=(h^(h>>>13))*1274126177; h=(h^(h>>>16));
   const r=((h>>>0)%1000)/1000;
-  return r < 0.55;
+  return r < wallChance;
 }
 
 function cellWalls(cx,cz){
