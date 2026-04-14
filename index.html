@@ -80,6 +80,35 @@
   }
   #log-detail-close:hover { color: #aa9960; }
 
+  /* Full story view */
+  #story-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.94); z-index: 220; display: none;
+    flex-direction: column; align-items: center; padding: 30px 20px;
+    overflow-y: auto;
+  }
+  #story-overlay.open { display: flex; }
+  #story-close {
+    position: fixed; top: 15px; right: 25px; color: #666; font-size: 24px;
+    cursor: pointer; z-index: 221;
+  }
+  #story-close:hover { color: #aa9960; }
+  #story-header { color: #aa9960; font-size: 18px; margin-bottom: 24px; flex-shrink: 0; }
+  #story-content { width: 100%; max-width: 560px; padding-bottom: 40px; }
+  .story-entry { margin-bottom: 28px; }
+  .story-entry-title {
+    color: #aa9960; font-size: 13px; font-weight: bold; margin-bottom: 8px;
+    border-bottom: 1px solid rgba(100,90,60,0.15); padding-bottom: 6px;
+  }
+  .story-entry-text {
+    color: #998870; font-size: 12px; line-height: 1.75; white-space: pre-wrap;
+  }
+  .story-entry-text.blurred {
+    color: #665544; filter: blur(4px); user-select: none;
+    pointer-events: none;
+  }
+  .story-entry-title.locked { color: #554433; }
+
   /* Paper dialog */
   #paper-dialog {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
@@ -121,7 +150,7 @@
 </style>
 </head>
 <body>
-<div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact</span></div>
+<div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact · L for journal</span></div>
 <div id="hud">level 0</div>
 <div id="interact">press E to read</div>
 <div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
@@ -141,6 +170,12 @@
   <span id="log-detail-close" onclick="closeLogDetail()">✕</span>
   <div id="log-detail-title"></div>
   <div id="log-detail-text"></div>
+</div>
+
+<div id="story-overlay">
+  <span id="story-close" onclick="closeStory()">✕</span>
+  <div id="story-header">📜 Jason's Journal</div>
+  <div id="story-content" id="story-content"></div>
 </div>
 
 <script type="importmap">
@@ -183,6 +218,32 @@ function renderLogList() {
     if (foundLogs.has(log.id)) div.onclick = () => openLogDetail(log.id);
     el.appendChild(div);
   }
+}
+let storyOpen = false;
+function openStory() {
+  document.exitPointerLock();
+  const el = document.getElementById('story-overlay');
+  const content = document.getElementById('story-content');
+  content.innerHTML = '';
+  for (const log of logData) {
+    const entry = document.createElement('div');
+    entry.className = 'story-entry';
+    const title = document.createElement('div');
+    title.className = 'story-entry-title' + (foundLogs.has(log.id) ? '' : ' locked');
+    title.textContent = log.title;
+    const text = document.createElement('div');
+    text.className = 'story-entry-text' + (foundLogs.has(log.id) ? '' : ' blurred');
+    text.textContent = log.text;
+    entry.appendChild(title);
+    entry.appendChild(text);
+    content.appendChild(entry);
+  }
+  el.classList.add('open');
+  storyOpen = true;
+}
+function closeStory() {
+  document.getElementById('story-overlay').classList.remove('open');
+  storyOpen = false;
 }
 function updateCounter() {
   document.getElementById('log-counter').textContent = `📋 Logs: ${foundLogs.size} / 50`;
@@ -281,14 +342,14 @@ function edgeHasWall(x1,z1,x2,z2){
 
   let wallChance;
   if(corridorNS){
-    wallChance = blocksNS ? 0.06 : 0.82; // Keep N-S open, wall off sides
+    wallChance = blocksNS ? 0.08 : 0.92; // Keep N-S open, wall off sides hard
   } else {
-    wallChance = blocksEW ? 0.06 : 0.82; // Keep E-W open, wall off sides
+    wallChance = blocksEW ? 0.08 : 0.92; // Keep E-W open, wall off sides hard
   }
 
-  // Region boundary — create openings between different corridor sections
+  // Region boundary — limited openings so corridors connect but sparingly
   if(rx1!==rx2 || rz1!==rz2){
-    wallChance = 0.25; // boundary = more open, creates turns/junctions
+    wallChance = 0.55; // boundary = some turns, not too many
   }
 
   // Rare open room: ~3% of cells have reduced walls everywhere
@@ -315,11 +376,13 @@ function cellWalls(cx,cz){
 // ─── LOG PLACEMENT ───
 // Deterministic per-cell: ~8% of cells get a log
 function cellLogId(cx,cz,ver){
+  // No logs near spawn
+  if(Math.abs(cx)+Math.abs(cz)<8) return -1;
   let h=(cx*123456789+cz*987654321+ver*555555)|0;
   h=(h^(h>>>13))*1274126177;h=(h^(h>>>16));
-  const r=((h>>>0)%1000)/1000;
-  if(r>0.08) return -1; // no log
-  return (((h>>>0)%50))+1; // log id 1-50
+  const r=((h>>>0)%10000)/10000;
+  if(r>0.02) return -1; // 2% chance — much rarer
+  return (((h>>>0)%50))+1;
 }
 
 function spawnLog(cx,cz,logId){
@@ -588,8 +651,13 @@ const keys={};
 addEventListener('keydown',e=>{
   keys[e.key.toLowerCase()]=true;
   if(e.key.toLowerCase()==='e') pickupLog();
+  if(e.key.toLowerCase()==='l' && !paperOpen) {
+    if(storyOpen) closeStory();
+    else openStory();
+  }
   if(e.key==='Escape'){
     if(paperOpen) closePaper();
+    else if(storyOpen) closeStory();
     else if(document.getElementById('log-detail').classList.contains('open')) closeLogDetail();
     else if(document.getElementById('log-overlay').classList.contains('open')) closeLogOverlay();
   }
@@ -626,7 +694,7 @@ function init(){
   loadSavedLogs();
 
   document.addEventListener('click',()=>{
-    if(!overlayOpen&&!paperOpen){
+    if(!overlayOpen&&!paperOpen&&!storyOpen){
       document.body.requestPointerLock();initAudio();
       document.getElementById('prompt').classList.add('hidden');
     }
@@ -653,7 +721,7 @@ function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
-  if(!overlayOpen&&!paperOpen){
+  if(!overlayOpen&&!paperOpen&&!storyOpen){
     const speed=2.5,dir=new THREE.Vector3();
     if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
     if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
