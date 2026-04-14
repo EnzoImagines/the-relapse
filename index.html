@@ -51,7 +51,7 @@ function makeWall(){
   for(let i=0;i<20;i++){x.fillStyle=`rgba(100,90,70,${0.03+Math.random()*0.08})`;x.fillRect(Math.random()*256,0,1+Math.random()*3,256);}
   for(let s=0;s<2;s++){x.beginPath();x.arc(Math.random()*256,Math.random()*60,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(80,75,50,0.1)';x.fill();}
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
+  return new THREE.MeshStandardMaterial({map:t,roughness:0.9,side:THREE.DoubleSide});
 }
 function makeCeiling(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
@@ -82,41 +82,36 @@ function seededRand(x, z, v) {
   return ((h >>> 0) % 1000) / 1000;
 }
 
-// Determine walls for a cell given its version
-// This creates corridor-like layouts: mostly walled, with 1-3 openings
-function cellWalls(cx, cz, ver) {
-  const r1 = seededRand(cx, cz, ver);
-  const r2 = seededRand(cx + 100, cz + 100, ver);
-  const r3 = seededRand(cx + 200, cz + 200, ver);
-  const r4 = seededRand(cx + 300, cz + 300, ver);
+// ─── EDGE-BASED WALLS ───
+// Walls live on edges between cells, not on cells.
+// An edge is defined by the two cells it separates.
+// Both cells' versions contribute to the edge seed so when either changes, the edge changes.
+// This guarantees both sides always agree.
 
-  // Start all walls closed, then open some to make corridors
-  let n = true, s = true, e = true, w = true;
+function edgeKey(x1,z1,x2,z2) {
+  // Normalize so (A,B) === (B,A)
+  if (x1 < x2 || (x1 === x2 && z1 < z2)) return `${x1},${z1}|${x2},${z2}`;
+  return `${x2},${z2}|${x1},${z1}`;
+}
 
-  // Pattern: pick a corridor type
-  const pattern = Math.floor(r1 * 6);
-  switch(pattern) {
-    case 0: n=false; s=false; break;                    // N-S straight
-    case 1: e=false; w=false; break;                    // E-W straight
-    case 2: n=false; e=false; break;                    // L-bend
-    case 3: n=false; w=false; break;                    // L-bend
-    case 4: s=false; e=false; break;                    // L-bend
-    case 5: s=false; w=false; break;                    // L-bend
-  }
+function edgeHasWall(x1,z1,x2,z2) {
+  const v1 = getVersion(x1,z1), v2 = getVersion(x2,z2);
+  // Combine both versions into seed
+  const seed = (x1*374761393 + z1*668265263 + x2*982451653 + z2*271828183 + v1*314159 + v2*161803) | 0;
+  let h = (seed ^ (seed >>> 13)) * 1274126177;
+  h = (h ^ (h >>> 16));
+  const r = ((h >>> 0) % 1000) / 1000;
+  // ~35% chance of wall = corridor-like feel
+  return r < 0.35;
+}
 
-  // Sometimes add a third opening (T-junction) ~35%
-  if (r2 < 0.35) {
-    const extra = Math.floor(r3 * 4);
-    if(extra===0) n=false;
-    else if(extra===1) s=false;
-    else if(extra===2) e=false;
-    else w=false;
-  }
-
-  // Rarely open all 4 (crossroads) ~8%
-  if (r4 < 0.08) { n=false; s=false; e=false; w=false; }
-
-  return {n,s,e,w};
+function cellWalls(cx, cz) {
+  return {
+    n: edgeHasWall(cx, cz, cx, cz-1),
+    s: edgeHasWall(cx, cz, cx, cz+1),
+    w: edgeHasWall(cx, cz, cx-1, cz),
+    e: edgeHasWall(cx, cz, cx+1, cz),
+  };
 }
 
 function getVersion(cx, cz) {
@@ -143,7 +138,7 @@ function buildChunk(cx, cz) {
   // Remove old version if exists
   if (existing) destroyChunk(key);
 
-  const walls = cellWalls(cx, cz, ver);
+  const walls = cellWalls(cx, cz);
   const meshes = [], lights = [];
   const wx = cx * T, wz = cz * T;
 
@@ -176,7 +171,7 @@ function buildChunk(cx, cz) {
   }
 
   // Light fixture
-  const lr = seededRand(cx + 500, cz + 500, ver);
+  const lr = seededRand(cx + 500, cz + 500, ver || 0);
   const working = lr > 0.1;
   const hasReal = working && (Math.abs(cx) + Math.abs(cz)) % 2 === 0;
   const flickering = hasReal && lr > 0.93;
@@ -248,8 +243,8 @@ function getWalls(cx, cz) {
   const key = `${cx},${cz}`;
   const chunk = builtChunks.get(key);
   if (chunk) return chunk.walls;
-  // Not built yet — compute from current version
-  return cellWalls(cx, cz, getVersion(cx, cz));
+  // Not built yet — compute from current versions
+  return cellWalls(cx, cz);
 }
 
 function canMove(x, z) {
