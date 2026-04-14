@@ -184,7 +184,7 @@
 <script>
 // Global UI functions (need to be non-module for onclick)
 let foundLogs = new Set();
-let logData = [];
+window.logData = [];
 let overlayOpen = false;
 
 function openLogOverlay() {
@@ -199,7 +199,7 @@ function closeLogOverlay() {
   overlayOpen = false;
 }
 function openLogDetail(id) {
-  const log = logData.find(l => l.id === id);
+  const log = window.logData.find(l => l.id === id);
   if (!log || !foundLogs.has(id)) return;
   document.getElementById('log-detail-title').textContent = log.title;
   document.getElementById('log-detail-text').textContent = log.text;
@@ -211,7 +211,7 @@ function closeLogDetail() {
 function renderLogList() {
   const el = document.getElementById('log-list');
   el.innerHTML = '';
-  for (const log of logData) {
+  for (const log of window.logData) {
     const div = document.createElement('div');
     div.className = 'log-item' + (foundLogs.has(log.id) ? '' : ' locked');
     div.textContent = foundLogs.has(log.id) ? log.title : `Log #${log.id} — ???`;
@@ -225,7 +225,7 @@ function openStory() {
   const el = document.getElementById('story-overlay');
   const content = document.getElementById('story-content');
   content.innerHTML = '';
-  for (const log of logData) {
+  for (const log of window.logData) {
     const entry = document.createElement('div');
     entry.className = 'story-entry';
     const title = document.createElement('div');
