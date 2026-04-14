@@ -271,6 +271,7 @@ import { LOGS } from './logs.js';
 window.logData = LOGS;
 
 let scene, camera, renderer, clock;
+let flashlight, flashlightTarget;
 let yaw = 0, pitch = 0;
 const T = 3.0, H = 2.8; // Narrower tiles, lower ceiling
 
@@ -286,6 +287,7 @@ let nearLog = null; // log currently in range
 let carpetMat, wallMat, ceilingMat;
 let floorGeo, ceilGeo, wallNSGeo, wallEWGeo, tubeGeo, lightOnMat, lightOffMat;
 let paperGeo, paperMat, tableTopGeo, tableLegGeo, tableMat;
+let frameGeo, paintingGeos, paintingMats;
 
 function initResources(){
   // Textures + materials
@@ -305,7 +307,74 @@ function initResources(){
   paperGeo=new THREE.PlaneGeometry(0.3,0.4);
   tableTopGeo=new THREE.BoxGeometry(0.7,0.04,0.5);
   tableLegGeo=new THREE.BoxGeometry(0.04,0.55,0.04);
+
+  // Paintings — generate 12 procedural artworks
+  frameGeo=new THREE.BoxGeometry(0.04,0.04,0.04); // reused for frame edges
+  paintingGeos=[];
+  paintingMats=[];
+  const sizes=[[0.8,0.6],[0.6,0.8],[0.7,0.5],[0.5,0.7],[0.9,0.6],[0.6,0.9]];
+  for(let i=0;i<12;i++){
+    const sz=sizes[i%sizes.length];
+    paintingGeos.push(new THREE.PlaneGeometry(sz[0],sz[1]));
+    paintingMats.push(makeArtwork(i,sz[0]*256|0,sz[1]*256|0));
+  }
 }
+
+function makeArtwork(seed,w,h){
+  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');
+  // Pseudo-random from seed
+  let s=seed*2654435761;
+  const r=()=>{s=(s*48271+1)&0x7fffffff;return s/0x7fffffff;};
+
+  const style=Math.floor(r()*5);
+  switch(style){
+    case 0: // Abstract color blocks
+      for(let b=0;b<6+r()*8;b++){
+        const hue=r()*360;
+        x.fillStyle=`hsl(${hue},${30+r()*40}%,${25+r()*35}%)`;
+        x.fillRect(r()*w,r()*h,w*0.15+r()*w*0.5,h*0.15+r()*h*0.5);
+      }
+      break;
+    case 1: // Dark landscape
+      x.fillStyle=`hsl(${220+r()*20},20%,${10+r()*15}%)`; x.fillRect(0,0,w,h);
+      x.fillStyle=`hsl(${25+r()*15},30%,${15+r()*10}%)`; x.fillRect(0,h*0.6,w,h*0.4);
+      // Moon/sun
+      x.beginPath();x.arc(w*0.3+r()*w*0.4,h*0.2+r()*h*0.2,10+r()*20,0,Math.PI*2);
+      x.fillStyle=`hsl(45,60%,${70+r()*20}%)`;x.fill();
+      break;
+    case 2: // Portrait silhouette
+      x.fillStyle=`hsl(${30+r()*20},15%,${75+r()*15}%)`;x.fillRect(0,0,w,h);
+      x.fillStyle=`hsl(0,0%,${10+r()*15}%)`;
+      x.beginPath();x.ellipse(w/2,h*0.35,w*0.2,h*0.22,0,0,Math.PI*2);x.fill();
+      x.fillRect(w*0.3,h*0.5,w*0.4,h*0.5);
+      break;
+    case 3: // Geometric lines
+      x.fillStyle=`hsl(${40+r()*10},20%,${80+r()*10}%)`;x.fillRect(0,0,w,h);
+      x.strokeStyle=`hsl(${r()*360},${20+r()*30}%,${20+r()*30}%)`;
+      for(let l=0;l<8+r()*12;l++){
+        x.lineWidth=1+r()*3;x.beginPath();
+        x.moveTo(r()*w,r()*h);x.lineTo(r()*w,r()*h);x.stroke();
+      }
+      break;
+    case 4: // Faded photograph (brownish)
+      x.fillStyle=`hsl(30,${20+r()*15}%,${50+r()*20}%)`;x.fillRect(0,0,w,h);
+      for(let d=0;d<3+r()*4;d++){
+        x.fillStyle=`hsla(${25+r()*15},${10+r()*20}%,${30+r()*30}%,${0.2+r()*0.3})`;
+        x.beginPath();x.arc(r()*w,r()*h,20+r()*40,0,Math.PI*2);x.fill();
+      }
+      // Vignette
+      const grd=x.createRadialGradient(w/2,h/2,w*0.2,w/2,h/2,w*0.7);
+      grd.addColorStop(0,'transparent');grd.addColorStop(1,'rgba(0,0,0,0.5)');
+      x.fillStyle=grd;x.fillRect(0,0,w,h);
+      break;
+  }
+  // Aging/noise
+  for(let n=0;n<500;n++){
+    x.fillStyle=`rgba(${r()>0.5?0:255},${r()>0.5?0:255},${r()>0.5?0:255},${r()*0.04})`;
+    x.fillRect(r()*w,r()*h,1+r()*2,1+r()*2);
+  }
+  const t=new THREE.CanvasTexture(c);
+  return new THREE.MeshStandardMaterial({map:t,roughness:0.75});
 
 function makeCarpetMat(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
@@ -484,6 +553,42 @@ function buildChunk(cx,cz){
     const l=new THREE.PointLight(0xffeedd,0.9,T*2.5);
     l.position.set(wx,H-0.1,wz);scene.add(l);lights.push(l);
     if(flickering){l.userData.flickering=true;l.userData.phase=lr*20;l.userData.tube=tube;}
+  }
+
+  // Maybe hang a painting (~12% of walls)
+  let ph=(cx*777+cz*999+ver*13)|0;ph=(ph^(ph>>>11))*2654435761;ph=ph^(ph>>>15);
+  const paintR=((ph>>>0)%100);
+  if(paintR<12){
+    // Pick which wall to put it on (only existing walls)
+    const wallDirs=[];
+    if(walls.n) wallDirs.push('n');
+    if(walls.s) wallDirs.push('s');
+    if(walls.w) wallDirs.push('w');
+    if(walls.e) wallDirs.push('e');
+    if(wallDirs.length>0){
+      const pickDir=wallDirs[(ph>>>8)%wallDirs.length];
+      const artIdx=((ph>>>4)%12);
+      const painting=new THREE.Mesh(paintingGeos[artIdx],paintingMats[artIdx]);
+      const frameDepth=0.12;
+      const py=H*0.48+((ph>>>16)%20-10)*0.005;
+      if(pickDir==='n'){painting.position.set(wx,py,wz-T/2+frameDepth);}
+      else if(pickDir==='s'){painting.position.set(wx,py,wz+T/2-frameDepth);painting.rotation.y=Math.PI;}
+      else if(pickDir==='w'){painting.position.set(wx-T/2+frameDepth,py,wz);painting.rotation.y=Math.PI/2;}
+      else{painting.position.set(wx+T/2-frameDepth,py,wz);painting.rotation.y=-Math.PI/2;}
+      scene.add(painting);meshes.push(painting);
+
+      // Frame (dark wood border)
+      const frameMat=new THREE.MeshStandardMaterial({color:0x3a2a1a,roughness:0.85});
+      const sz=paintingGeos[artIdx].parameters;
+      const fw=sz.width+0.06, fh=sz.height+0.06;
+      const frame=new THREE.Mesh(new THREE.BoxGeometry(fw,fh,0.03),frameMat);
+      frame.position.copy(painting.position);
+      frame.rotation.copy(painting.rotation);
+      // Nudge frame slightly behind painting
+      const backDir=new THREE.Vector3(0,0,-0.015).applyEuler(painting.rotation);
+      frame.position.add(backDir);
+      scene.add(frame);meshes.push(frame);
+    }
   }
 
   builtChunks.set(key,{meshes,lights,version:ver,walls,cx,cz});
@@ -706,7 +811,14 @@ function init(){
   camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
   camera.position.set(0,1.5,0);
 
-  scene.add(new THREE.AmbientLight(0xffe8c0,0.45));
+  scene.add(new THREE.AmbientLight(0xffe8c0,0.35));
+
+  // Flashlight
+  flashlight = new THREE.SpotLight(0xffeedd, 1.5, 16, Math.PI/6.5, 0.5, 1.4);
+  scene.add(flashlight);
+  flashlightTarget = new THREE.Object3D();
+  scene.add(flashlightTarget);
+  flashlight.target = flashlightTarget;
 
   initResources();
 
@@ -760,6 +872,12 @@ function animate(){
     if(moving&&!isWalking){isWalking=true;stepLoop();}
     else if(!moving)isWalking=false;
   }
+
+  // Flashlight follows camera
+  flashlight.position.copy(camera.position);
+  flashlight.position.y-=0.2;
+  const fld=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
+  flashlightTarget.position.copy(camera.position).add(fld.multiplyScalar(8));
 
   updateTimer+=dt;
   if(updateTimer>0.1){
