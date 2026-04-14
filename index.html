@@ -71,6 +71,53 @@ function initAudio() {
   const h2g = audioCtx.createGain(); h2g.gain.value=0.006;
   h2.connect(h2g); h2g.connect(masterGain); h2.start();
 
+  // Occasional water drip
+  setInterval(()=>{
+    if(Math.random()>0.4) return;
+    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.15,audioCtx.sampleRate);
+    const dd=buf.getChannelData(0);
+    const freq=800+Math.random()*600;
+    for(let i=0;i<dd.length;i++) dd[i]=Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)*Math.exp(-i/audioCtx.sampleRate*40)*0.08;
+    const src=audioCtx.createBufferSource();src.buffer=buf;
+    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
+    const g=audioCtx.createGain();g.gain.value=0.1+Math.random()*0.1;
+    src.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
+  },3000+Math.random()*5000);
+
+  // Distant metallic creak
+  setInterval(()=>{
+    if(Math.random()>0.3) return;
+    const dur=0.8+Math.random()*0.5;
+    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*dur,audioCtx.sampleRate);
+    const dd=buf.getChannelData(0);
+    const freq=40+Math.random()*30;
+    for(let i=0;i<dd.length;i++){
+      const env=Math.exp(-i/audioCtx.sampleRate*3);
+      dd[i]=(Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)+Math.random()*0.3)*env*0.05;
+    }
+    const src=audioCtx.createBufferSource();src.buffer=buf;
+    const f=audioCtx.createBiquadFilter();f.type='bandpass';f.frequency.value=60+Math.random()*80;f.Q.value=5;
+    const g=audioCtx.createGain();g.gain.value=0.15;
+    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
+    src.connect(f);f.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
+  },8000+Math.random()*12000);
+
+  // Wind through tunnels (looping)
+  const windBuf=audioCtx.createBuffer(1,audioCtx.sampleRate*10,audioCtx.sampleRate);
+  const wd=windBuf.getChannelData(0);
+  for(let i=0;i<wd.length;i++) wd[i]=(Math.random()*2-1)*0.02*(0.5+0.5*Math.sin(i/audioCtx.sampleRate*0.3));
+  const wind=audioCtx.createBufferSource();
+  wind.buffer=windBuf;wind.loop=true;
+  const wf=audioCtx.createBiquadFilter();wf.type='bandpass';wf.frequency.value=200;wf.Q.value=0.5;
+  const wg=audioCtx.createGain();wg.gain.value=0.4;
+  wind.connect(wf);wf.connect(wg);wg.connect(masterGain);wind.start();
+
+  // Fluorescent buzz (proximity-based would be ideal, global for now)
+  const buzz=audioCtx.createOscillator();buzz.type='square';buzz.frequency.value=120;
+  const buzzG=audioCtx.createGain();buzzG.gain.value=0.004;
+  const buzzF=audioCtx.createBiquadFilter();buzzF.type='bandpass';buzzF.frequency.value=240;buzzF.Q.value=8;
+  buzz.connect(buzzF);buzzF.connect(buzzG);buzzG.connect(masterGain);buzz.start();
+
   humStarted = true;
 }
 
@@ -502,14 +549,14 @@ function init() {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.55;
+  renderer.toneMappingExposure = 0.7;
   document.body.appendChild(renderer.domElement);
 
   camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 100);
   camera.position.set(9*TILE, 1.6, 5*TILE);
 
   // Flashlight
-  flashlight = new THREE.SpotLight(0xffeedd, 2.0, 18, Math.PI/7, 0.45, 1.5);
+  flashlight = new THREE.SpotLight(0xffeedd, 3.5, 25, Math.PI/6, 0.4, 1.2);
   flashlight.castShadow = true;
   flashlight.shadow.mapSize.set(512,512);
   scene.add(flashlight);
