@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@700');
+    </style>
+    <!-- Corridor glow gradient -->
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#aa9960" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Vanishing point corridor -->
+    <linearGradient id="corridor" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#aa9960" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#aa9960" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="800" height="400" fill="#0a0a08"/>
+  
+  <!-- Subtle corridor perspective lines converging to center -->
+  <line x1="400" y1="160" x2="200" y2="0" stroke="#aa9960" stroke-opacity="0.06" stroke-width="1"/>
+  <line x1="400" y1="160" x2="600" y2="0" stroke="#aa9960" stroke-opacity="0.06" stroke-width="1"/>
+  <line x1="400" y1="160" x2="100" y2="0" stroke="#aa9960" stroke-opacity="0.04" stroke-width="1"/>
+  <line x1="400" y1="160" x2="700" y2="0" stroke="#aa9960" stroke-opacity="0.04" stroke-width="1"/>
+  <line x1="400" y1="160" x2="0" y2="0" stroke="#aa9960" stroke-opacity="0.03" stroke-width="1"/>
+  <line x1="400" y1="160" x2="800" y2="0" stroke="#aa9960" stroke-opacity="0.03" stroke-width="1"/>
+  
+  <line x1="400" y1="240" x2="200" y2="400" stroke="#aa9960" stroke-opacity="0.06" stroke-width="1"/>
+  <line x1="400" y1="240" x2="600" y2="400" stroke="#aa9960" stroke-opacity="0.06" stroke-width="1"/>
+  <line x1="400" y1="240" x2="100" y2="400" stroke="#aa9960" stroke-opacity="0.04" stroke-width="1"/>
+  <line x1="400" y1="240" x2="700" y2="400" stroke="#aa9960" stroke-opacity="0.04" stroke-width="1"/>
+  <line x1="400" y1="240" x2="0" y2="400" stroke="#aa9960" stroke-opacity="0.03" stroke-width="1"/>
+  <line x1="400" y1="240" x2="800" y2="400" stroke="#aa9960" stroke-opacity="0.03" stroke-width="1"/>
+  
+  <!-- Center glow -->
+  <rect x="100" y="50" width="600" height="300" fill="url(#glow)"/>
+  
+  <!-- Small vanishing point rectangle -->
+  <rect x="385" y="185" width="30" height="30" fill="none" stroke="#aa9960" stroke-opacity="0.2" stroke-width="0.5"/>
+  
+  <!-- THE -->
+  <text x="400" y="175" text-anchor="middle" font-family="'Space Mono', 'Courier New', monospace" font-weight="700" font-size="28" fill="#665540" letter-spacing="18">THE</text>
+  
+  <!-- RELAPSE -->
+  <text x="400" y="240" text-anchor="middle" font-family="'Space Mono', 'Courier New', monospace" font-weight="700" font-size="64" fill="#aa9960" letter-spacing="12">RELAPSE</text>
+  
+  <!-- Subtle underline -->
+  <line x1="200" y1="260" x2="600" y2="260" stroke="#aa9960" stroke-opacity="0.15" stroke-width="0.5"/>
+  
+  <!-- Tagline -->
+  <text x="400" y="290" text-anchor="middle" font-family="'Space Mono', 'Courier New', monospace" font-size="11" fill="#554430" letter-spacing="6">YOU'VE BEEN HERE BEFORE</text>
+  
+  <!-- Noise/distress - subtle horizontal scan lines -->
+  <line x1="0" y1="132" x2="800" y2="132" stroke="#aa9960" stroke-opacity="0.03" stroke-width="0.5"/>
+  <line x1="0" y1="198" x2="800" y2="198" stroke="#aa9960" stroke-opacity="0.02" stroke-width="0.5"/>
+  <line x1="0" y1="267" x2="800" y2="267" stroke="#aa9960" stroke-opacity="0.03" stroke-width="0.5"/>
+  <line x1="0" y1="89" x2="800" y2="89" stroke="#aa9960" stroke-opacity="0.02" stroke-width="0.5"/>
+  <line x1="0" y1="312" x2="800" y2="312" stroke="#aa9960" stroke-opacity="0.02" stroke-width="0.5"/>
+</svg>
