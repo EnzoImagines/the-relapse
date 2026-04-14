@@ -82,15 +82,15 @@
 
   /* Full story view */
   #story-overlay {
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.94); z-index: 220; display: none;
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    background: rgba(5,5,3,0.96); z-index: 500; display: none;
     flex-direction: column; align-items: center; padding: 30px 20px;
-    overflow-y: auto;
+    overflow-y: auto; overflow-x: hidden;
   }
   #story-overlay.open { display: flex; }
   #story-close {
     position: fixed; top: 15px; right: 25px; color: #666; font-size: 24px;
-    cursor: pointer; z-index: 221;
+    cursor: pointer; z-index: 501;
   }
   #story-close:hover { color: #aa9960; }
   #story-header { color: #aa9960; font-size: 18px; margin-bottom: 24px; flex-shrink: 0; }
@@ -175,7 +175,7 @@
 <div id="story-overlay">
   <span id="story-close" onclick="closeStory()">✕</span>
   <div id="story-header">📜 Jason's Journal</div>
-  <div id="story-content" id="story-content"></div>
+  <div id="story-content"></div>
 </div>
 
 <script type="importmap">
@@ -299,7 +299,7 @@ function makeWall(){
   for(let i=0;i<20;i++){x.fillStyle=`rgba(100,90,70,${0.03+Math.random()*0.08})`;x.fillRect(Math.random()*256,0,1+Math.random()*3,256);}
   for(let s=0;s<2;s++){x.beginPath();x.arc(Math.random()*256,Math.random()*60,10+Math.random()*20,0,Math.PI*2);x.fillStyle='rgba(80,75,50,0.1)';x.fill();}
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.9,side:THREE.DoubleSide});
+  return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
 }
 function makeCeiling(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
@@ -452,11 +452,12 @@ function buildChunk(cx,cz){
   const c=new THREE.Mesh(new THREE.PlaneGeometry(T,T),ceilingMat);
   c.rotation.x=Math.PI/2;c.position.set(wx,H,wz);scene.add(c);meshes.push(c);
 
-  // Walls
-  if(walls.n){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
-  if(walls.s){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx,H/2,wz+T/2);w.rotation.y=Math.PI;scene.add(w);meshes.push(w);}
-  if(walls.w){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx-T/2,H/2,wz);w.rotation.y=Math.PI/2;scene.add(w);meshes.push(w);}
-  if(walls.e){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx+T/2,H/2,wz);w.rotation.y=-Math.PI/2;scene.add(w);meshes.push(w);}
+  // Walls — thick 3D boxes
+  const WT=0.2; // wall thickness
+  if(walls.n){const w=new THREE.Mesh(new THREE.BoxGeometry(T+WT,H,WT),wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
+  if(walls.s){const w=new THREE.Mesh(new THREE.BoxGeometry(T+WT,H,WT),wallMat);w.position.set(wx,H/2,wz+T/2);scene.add(w);meshes.push(w);}
+  if(walls.w){const w=new THREE.Mesh(new THREE.BoxGeometry(WT,H,T+WT),wallMat);w.position.set(wx-T/2,H/2,wz);scene.add(w);meshes.push(w);}
+  if(walls.e){const w=new THREE.Mesh(new THREE.BoxGeometry(WT,H,T+WT),wallMat);w.position.set(wx+T/2,H/2,wz);scene.add(w);meshes.push(w);}
 
   // Light fixture
   let h2=(cx*31337+cz*73+ver*99)|0;h2=(h2^(h2>>>13))*1274126177;h2=h2^(h2>>>16);
