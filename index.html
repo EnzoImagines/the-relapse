@@ -5,38 +5,184 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>dream subway</title>
 <style>
-  * { margin: 0; padding: 0; }
-  body { overflow: hidden; background: #000; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
   canvas { display: block; }
-  #hud {
-    position: fixed; bottom: 20px; left: 20px;
-    color: #665; font-family: 'Courier New', monospace;
-    font-size: 11px; z-index: 10; pointer-events: none; opacity: 0.5;
-  }
+
   #prompt {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    color: #666; font-family: 'Courier New', monospace; font-size: 13px;
-    z-index: 100; pointer-events: none; text-align: center;
-    opacity: 1; transition: opacity 1s;
+    color: #666; font-size: 13px; z-index: 100; pointer-events: none;
+    text-align: center; opacity: 1; transition: opacity 1s;
   }
-  #prompt.hidden { opacity: 0; }
+  #prompt.hidden { opacity: 0; pointer-events: none; }
+
+  #hud {
+    position: fixed; bottom: 20px; left: 20px;
+    color: #665; font-size: 11px; z-index: 10; pointer-events: none; opacity: 0.5;
+  }
+
+  /* Interaction prompt */
+  #interact {
+    position: fixed; bottom: 50%; left: 50%; transform: translateX(-50%);
+    color: #aa9960; font-size: 12px; z-index: 20; pointer-events: none;
+    opacity: 0; transition: opacity 0.3s; text-align: center;
+  }
+  #interact.visible { opacity: 1; }
+
+  /* Log counter top right */
+  #log-counter {
+    position: fixed; top: 20px; right: 20px;
+    color: #998860; font-size: 13px; z-index: 30; cursor: pointer;
+    opacity: 0.7; transition: opacity 0.2s; user-select: none;
+  }
+  #log-counter:hover { opacity: 1; }
+
+  /* Log viewer overlay */
+  #log-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.92); z-index: 200; display: none;
+    flex-direction: column; align-items: center; padding: 40px 20px;
+    overflow-y: auto;
+  }
+  #log-overlay.open { display: flex; }
+  #log-overlay h2 { color: #aa9960; font-size: 18px; margin-bottom: 20px; }
+  #log-close {
+    position: fixed; top: 15px; right: 25px; color: #666; font-size: 24px;
+    cursor: pointer; z-index: 201;
+  }
+  #log-close:hover { color: #aa9960; }
+  .log-list { width: 100%; max-width: 500px; }
+  .log-item {
+    padding: 10px 14px; margin: 4px 0; background: rgba(60,55,40,0.3);
+    color: #887755; cursor: pointer; font-size: 12px; border: 1px solid rgba(100,90,60,0.15);
+    transition: background 0.2s;
+  }
+  .log-item:hover { background: rgba(80,70,50,0.4); color: #aa9960; }
+  .log-item.locked { color: #444; cursor: default; }
+  .log-item.locked:hover { background: rgba(60,55,40,0.3); color: #444; }
+
+  /* Single log view */
+  #log-detail {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.95); z-index: 210; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    padding: 60px 30px;
+  }
+  #log-detail.open { display: flex; }
+  #log-detail-title { color: #aa9960; font-size: 16px; margin-bottom: 20px; }
+  #log-detail-text {
+    color: #998870; font-size: 13px; line-height: 1.7; max-width: 550px;
+    text-align: left; white-space: pre-wrap;
+  }
+  #log-detail-close {
+    position: fixed; top: 15px; right: 25px; color: #666; font-size: 24px;
+    cursor: pointer; z-index: 211;
+  }
+  #log-detail-close:hover { color: #aa9960; }
+
+  /* Pickup notification */
+  #pickup-toast {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #aa9960; font-size: 14px; z-index: 50; pointer-events: none;
+    opacity: 0; transition: opacity 0.5s; text-align: center;
+    background: rgba(0,0,0,0.7); padding: 12px 24px; border: 1px solid rgba(100,90,60,0.3);
+  }
+  #pickup-toast.visible { opacity: 1; }
 </style>
 </head>
 <body>
-<div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move. mouse to look.</span></div>
+<div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact</span></div>
 <div id="hud">level 0</div>
+<div id="interact">press E to read</div>
+<div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
+<div id="pickup-toast"></div>
+
+<div id="log-overlay">
+  <span id="log-close" onclick="closeLogOverlay()">✕</span>
+  <h2>Found Logs</h2>
+  <div class="log-list" id="log-list"></div>
+</div>
+
+<div id="log-detail">
+  <span id="log-detail-close" onclick="closeLogDetail()">✕</span>
+  <div id="log-detail-title"></div>
+  <div id="log-detail-text"></div>
+</div>
 
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"}}
 </script>
+<script>
+// Global UI functions (need to be non-module for onclick)
+let foundLogs = new Set();
+let logData = [];
+let overlayOpen = false;
+
+function openLogOverlay() {
+  document.exitPointerLock();
+  const el = document.getElementById('log-overlay');
+  el.classList.add('open');
+  overlayOpen = true;
+  renderLogList();
+}
+function closeLogOverlay() {
+  document.getElementById('log-overlay').classList.remove('open');
+  overlayOpen = false;
+}
+function openLogDetail(id) {
+  const log = logData.find(l => l.id === id);
+  if (!log || !foundLogs.has(id)) return;
+  document.getElementById('log-detail-title').textContent = log.title;
+  document.getElementById('log-detail-text').textContent = log.text;
+  document.getElementById('log-detail').classList.add('open');
+}
+function closeLogDetail() {
+  document.getElementById('log-detail').classList.remove('open');
+}
+function renderLogList() {
+  const el = document.getElementById('log-list');
+  el.innerHTML = '';
+  for (const log of logData) {
+    const div = document.createElement('div');
+    div.className = 'log-item' + (foundLogs.has(log.id) ? '' : ' locked');
+    div.textContent = foundLogs.has(log.id) ? log.title : `Log #${log.id} — ???`;
+    if (foundLogs.has(log.id)) div.onclick = () => openLogDetail(log.id);
+    el.appendChild(div);
+  }
+}
+function updateCounter() {
+  document.getElementById('log-counter').textContent = `📋 Logs: ${foundLogs.size} / 50`;
+}
+function showPickup(title) {
+  const el = document.getElementById('pickup-toast');
+  el.textContent = `Found: ${title}`;
+  el.classList.add('visible');
+  setTimeout(() => el.classList.remove('visible'), 2500);
+}
+</script>
+
 <script type="module">
 import * as THREE from 'three';
+import { LOGS } from './logs.js';
+
+// Expose log data to global
+window.logData = LOGS;
 
 let scene, camera, renderer, clock;
 let yaw = 0, pitch = 0;
-const T = 4.0, H = 3.0;
+const T = 3.0, H = 2.8; // Narrower tiles, lower ceiling
+
+const VIEW_DIST = 5;
+const chunkVersions = new Map();
+const builtChunks = new Map();
+
+// Log objects in the world
+const worldLogs = new Map(); // "cx,cz" -> { mesh, id }
+let nearLog = null; // log currently in range
 
 // ─── TEXTURES ───
+let carpetMat, wallMat, ceilingMat, paperMat;
+
 function makeCarpet(){
   const c=document.createElement('canvas');c.width=c.height=256;const x=c.getContext('2d');
   x.fillStyle='#8a7a55';x.fillRect(0,0,256,256);
@@ -63,354 +209,403 @@ function makeCeiling(){
   return new THREE.MeshStandardMaterial({map:t,roughness:0.85});
 }
 
-let carpetMat, wallMat, ceilingMat;
-
-// ─── CORRIDOR CHUNK SYSTEM ───
-// Each chunk is a cell at (cx,cz). It has 4 potential walls (N/S/E/W).
-// A "version" counter per cell changes every time the cell leaves view.
-// Different version = different corridor layout. You can never go back.
-
-const chunkVersions = new Map();  // "x,z" -> version number
-const builtChunks = new Map();    // "x,z" -> { meshes, lights, version, walls:{n,s,e,w} }
-let globalVersion = 0;
-const VIEW_DIST = 5;
-
-function seededRand(x, z, v) {
-  let h = (x * 374761393 + z * 668265263 + v * 982451653) | 0;
-  h = (h ^ (h >>> 13)) * 1274126177;
-  h = (h ^ (h >>> 16));
-  return ((h >>> 0) % 1000) / 1000;
-}
-
 // ─── EDGE-BASED WALLS ───
-// Walls live on edges between cells, not on cells.
-// An edge is defined by the two cells it separates.
-// Both cells' versions contribute to the edge seed so when either changes, the edge changes.
-// This guarantees both sides always agree.
+function getVersion(cx,cz){ const k=`${cx},${cz}`; if(!chunkVersions.has(k))chunkVersions.set(k,0); return chunkVersions.get(k); }
+function bumpVersion(cx,cz){ const k=`${cx},${cz}`; const v=(chunkVersions.get(k)||0)+1; chunkVersions.set(k,v); return v; }
 
-function edgeKey(x1,z1,x2,z2) {
-  // Normalize so (A,B) === (B,A)
-  if (x1 < x2 || (x1 === x2 && z1 < z2)) return `${x1},${z1}|${x2},${z2}`;
-  return `${x2},${z2}|${x1},${z1}`;
+function edgeHasWall(x1,z1,x2,z2){
+  const v1=getVersion(x1,z1),v2=getVersion(x2,z2);
+  let h=(x1*374761393+z1*668265263+x2*982451653+z2*271828183+v1*314159+v2*161803)|0;
+  h=(h^(h>>>13))*1274126177; h=(h^(h>>>16));
+  const r=((h>>>0)%1000)/1000;
+  return r < 0.55; // 55% walls = more corridor-like, fewer open areas
 }
 
-function edgeHasWall(x1,z1,x2,z2) {
-  const v1 = getVersion(x1,z1), v2 = getVersion(x2,z2);
-  // Combine both versions into seed
-  const seed = (x1*374761393 + z1*668265263 + x2*982451653 + z2*271828183 + v1*314159 + v2*161803) | 0;
-  let h = (seed ^ (seed >>> 13)) * 1274126177;
-  h = (h ^ (h >>> 16));
-  const r = ((h >>> 0) % 1000) / 1000;
-  // ~35% chance of wall = corridor-like feel
-  return r < 0.35;
-}
-
-function cellWalls(cx, cz) {
+function cellWalls(cx,cz){
   return {
-    n: edgeHasWall(cx, cz, cx, cz-1),
-    s: edgeHasWall(cx, cz, cx, cz+1),
-    w: edgeHasWall(cx, cz, cx-1, cz),
-    e: edgeHasWall(cx, cz, cx+1, cz),
+    n:edgeHasWall(cx,cz,cx,cz-1),
+    s:edgeHasWall(cx,cz,cx,cz+1),
+    w:edgeHasWall(cx,cz,cx-1,cz),
+    e:edgeHasWall(cx,cz,cx+1,cz),
   };
 }
 
-function getVersion(cx, cz) {
-  const key = `${cx},${cz}`;
-  if (!chunkVersions.has(key)) chunkVersions.set(key, 0);
-  return chunkVersions.get(key);
+// ─── LOG PLACEMENT ───
+// Deterministic per-cell: ~8% of cells get a log
+function cellLogId(cx,cz,ver){
+  let h=(cx*123456789+cz*987654321+ver*555555)|0;
+  h=(h^(h>>>13))*1274126177;h=(h^(h>>>16));
+  const r=((h>>>0)%1000)/1000;
+  if(r>0.08) return -1; // no log
+  return (((h>>>0)%50))+1; // log id 1-50
 }
 
-function bumpVersion(cx, cz) {
-  const key = `${cx},${cz}`;
-  const v = (chunkVersions.get(key) || 0) + 1;
-  chunkVersions.set(key, v);
-  return v;
+function spawnLog(cx,cz,logId){
+  const key=`${cx},${cz}`;
+  if(worldLogs.has(key)) return;
+
+  const wx=cx*T, wz=cz*T;
+
+  // Paper on floor or floating slightly (on a "table")
+  const onTable = Math.random() > 0.6;
+  const group = new THREE.Group();
+
+  if(onTable){
+    // Small table
+    const tableMat = new THREE.MeshStandardMaterial({color:0x665544,roughness:0.8});
+    const top = new THREE.Mesh(new THREE.BoxGeometry(0.7,0.04,0.5),tableMat);
+    top.position.y=0.55; group.add(top);
+    for(const lx of[-0.28,0.28]) for(const lz of[-0.18,0.18]){
+      const leg=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.55,0.04),tableMat);
+      leg.position.set(lx,0.275,lz); group.add(leg);
+    }
+  }
+
+  // Paper
+  const paper = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.3,0.4),
+    new THREE.MeshStandardMaterial({color:0xeee8d5,roughness:0.7,side:THREE.DoubleSide})
+  );
+  paper.rotation.x = onTable ? -Math.PI/2 : -Math.PI/2;
+  paper.position.y = onTable ? 0.58 : 0.01;
+  // Slight random rotation
+  paper.rotation.z = (Math.random()-0.5)*0.3;
+  group.add(paper);
+
+  // Slight offset within cell
+  const ox=(Math.random()-0.5)*0.5, oz=(Math.random()-0.5)*0.5;
+  group.position.set(wx+ox,0,wz+oz);
+  scene.add(group);
+
+  worldLogs.set(key,{group,logId,cx,cz});
 }
 
-function buildChunk(cx, cz) {
-  const key = `${cx},${cz}`;
-  const ver = getVersion(cx, cz);
+function removeWorldLog(key){
+  const wl=worldLogs.get(key);
+  if(!wl)return;
+  scene.remove(wl.group);
+  worldLogs.delete(key);
+}
 
-  // Already built with this version? Skip
-  const existing = builtChunks.get(key);
-  if (existing && existing.version === ver) return;
+// ─── BUILD CHUNK ───
+function buildChunk(cx,cz){
+  const key=`${cx},${cz}`;
+  const ver=getVersion(cx,cz);
+  const existing=builtChunks.get(key);
+  if(existing&&existing.version===ver) return;
+  if(existing) destroyChunk(key);
 
-  // Remove old version if exists
-  if (existing) destroyChunk(key);
-
-  const walls = cellWalls(cx, cz);
-  const meshes = [], lights = [];
-  const wx = cx * T, wz = cz * T;
+  const walls=cellWalls(cx,cz);
+  const meshes=[],lights=[];
+  const wx=cx*T, wz=cz*T;
 
   // Floor
-  const f = new THREE.Mesh(new THREE.PlaneGeometry(T, T), carpetMat);
-  f.rotation.x = -Math.PI / 2; f.position.set(wx, 0, wz);
-  scene.add(f); meshes.push(f);
+  const f=new THREE.Mesh(new THREE.PlaneGeometry(T,T),carpetMat);
+  f.rotation.x=-Math.PI/2;f.position.set(wx,0,wz);scene.add(f);meshes.push(f);
 
   // Ceiling
-  const c = new THREE.Mesh(new THREE.PlaneGeometry(T, T), ceilingMat);
-  c.rotation.x = Math.PI / 2; c.position.set(wx, H, wz);
-  scene.add(c); meshes.push(c);
+  const c=new THREE.Mesh(new THREE.PlaneGeometry(T,T),ceilingMat);
+  c.rotation.x=Math.PI/2;c.position.set(wx,H,wz);scene.add(c);meshes.push(c);
 
   // Walls
-  if (walls.n) {
-    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
-    w.position.set(wx, H/2, wz - T/2); scene.add(w); meshes.push(w);
-  }
-  if (walls.s) {
-    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
-    w.position.set(wx, H/2, wz + T/2); w.rotation.y = Math.PI; scene.add(w); meshes.push(w);
-  }
-  if (walls.w) {
-    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
-    w.position.set(wx - T/2, H/2, wz); w.rotation.y = Math.PI/2; scene.add(w); meshes.push(w);
-  }
-  if (walls.e) {
-    const w = new THREE.Mesh(new THREE.PlaneGeometry(T, H), wallMat);
-    w.position.set(wx + T/2, H/2, wz); w.rotation.y = -Math.PI/2; scene.add(w); meshes.push(w);
-  }
+  if(walls.n){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
+  if(walls.s){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx,H/2,wz+T/2);w.rotation.y=Math.PI;scene.add(w);meshes.push(w);}
+  if(walls.w){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx-T/2,H/2,wz);w.rotation.y=Math.PI/2;scene.add(w);meshes.push(w);}
+  if(walls.e){const w=new THREE.Mesh(new THREE.PlaneGeometry(T,H),wallMat);w.position.set(wx+T/2,H/2,wz);w.rotation.y=-Math.PI/2;scene.add(w);meshes.push(w);}
 
   // Light fixture
-  const lr = seededRand(cx + 500, cz + 500, ver || 0);
-  const working = lr > 0.1;
-  const hasReal = working && (Math.abs(cx) + Math.abs(cz)) % 2 === 0;
-  const flickering = hasReal && lr > 0.93;
+  let h2=(cx*31337+cz*73+ver*99)|0;h2=(h2^(h2>>>13))*1274126177;h2=h2^(h2>>>16);
+  const lr=((h2>>>0)%1000)/1000;
+  const working=lr>0.12;
+  const hasReal=working&&(Math.abs(cx)+Math.abs(cz))%2===0;
+  const flickering=hasReal&&lr>0.94;
 
-  const tube = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 0.12),
+  const tube=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.04,0.1),
     new THREE.MeshStandardMaterial({
-      color: working ? 0xffffee : 0x333333,
-      emissive: working ? 0xffffdd : 0x000000,
-      emissiveIntensity: working ? 0.8 : 0
+      color:working?0xffffee:0x333333,
+      emissive:working?0xffffdd:0x000000,
+      emissiveIntensity:working?0.8:0
     }));
-  tube.position.set(wx, H - 0.05, wz); scene.add(tube); meshes.push(tube);
+  tube.position.set(wx,H-0.04,wz);scene.add(tube);meshes.push(tube);
 
-  if (hasReal) {
-    const l = new THREE.PointLight(0xffeedd, 1.0, T * 2.5);
-    l.position.set(wx, H - 0.12, wz); scene.add(l); lights.push(l);
-    if (flickering) { l.userData.flickering = true; l.userData.phase = lr * 20; l.userData.tube = tube; }
+  if(hasReal){
+    const l=new THREE.PointLight(0xffeedd,0.9,T*2.5);
+    l.position.set(wx,H-0.1,wz);scene.add(l);lights.push(l);
+    if(flickering){l.userData.flickering=true;l.userData.phase=lr*20;l.userData.tube=tube;}
   }
 
-  builtChunks.set(key, { meshes, lights, version: ver, walls, cx, cz });
+  builtChunks.set(key,{meshes,lights,version:ver,walls,cx,cz});
+
+  // Maybe spawn a log
+  const logId=cellLogId(cx,cz,ver);
+  if(logId>0 && !foundLogs.has(logId)){
+    spawnLog(cx,cz,logId);
+  }
 }
 
-function destroyChunk(key) {
-  const chunk = builtChunks.get(key);
-  if (!chunk) return;
-  for (const m of chunk.meshes) { scene.remove(m); if (m.geometry) m.geometry.dispose(); }
-  for (const l of chunk.lights) scene.remove(l);
+function destroyChunk(key){
+  const chunk=builtChunks.get(key);
+  if(!chunk)return;
+  for(const m of chunk.meshes){scene.remove(m);if(m.geometry)m.geometry.dispose();}
+  for(const l of chunk.lights)scene.remove(l);
   builtChunks.delete(key);
+  // Also remove any log in this cell
+  removeWorldLog(key);
 }
 
-// ─── VIEW-BASED GENERATION & CULLING ───
-// Generate in front, bump versions behind
-
-function isInView(cx, cz, px, pz, fwdX, fwdZ) {
-  const dx = cx - px, dz = cz - pz;
-  const dist = Math.sqrt(dx*dx + dz*dz);
-  if (dist < 1.5) return true; // always keep immediate neighbors
-  if (dist > VIEW_DIST) return false;
-  const dot = (dx * fwdX + dz * fwdZ) / Math.max(dist, 0.01);
-  return dot > -0.25; // roughly forward hemisphere + a bit behind
+// ─── VIEW MANAGEMENT ───
+function isInView(cx,cz,px,pz,fx,fz){
+  const dx=cx-px,dz=cz-pz;
+  const dist=Math.sqrt(dx*dx+dz*dz);
+  if(dist<1.5)return true;
+  if(dist>VIEW_DIST)return false;
+  return(dx*fx+dz*fz)/Math.max(dist,0.01)>-0.25;
 }
 
-function updateWorld() {
-  const px = Math.round(camera.position.x / T);
-  const pz = Math.round(camera.position.z / T);
-  const fwd = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+function updateWorld(){
+  const px=Math.round(camera.position.x/T),pz=Math.round(camera.position.z/T);
+  const fwd=new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
 
-  // 1. Bump versions for chunks that are out of view
-  for (const [key, chunk] of builtChunks) {
-    if (!isInView(chunk.cx, chunk.cz, px, pz, fwd.x, fwd.z)) {
-      bumpVersion(chunk.cx, chunk.cz);
+  for(const[key,chunk]of builtChunks){
+    if(!isInView(chunk.cx,chunk.cz,px,pz,fwd.x,fwd.z)){
+      bumpVersion(chunk.cx,chunk.cz);
       destroyChunk(key);
     }
   }
 
-  // 2. Generate/rebuild chunks in view
-  for (let dx = -VIEW_DIST; dx <= VIEW_DIST; dx++) {
-    for (let dz = -VIEW_DIST; dz <= VIEW_DIST; dz++) {
-      if (dx*dx + dz*dz > VIEW_DIST*VIEW_DIST) continue;
-      const cx = px + dx, cz = pz + dz;
-      if (isInView(cx, cz, px, pz, fwd.x, fwd.z)) {
-        buildChunk(cx, cz);
-      }
+  for(let dx=-VIEW_DIST;dx<=VIEW_DIST;dx++)
+    for(let dz=-VIEW_DIST;dz<=VIEW_DIST;dz++){
+      if(dx*dx+dz*dz>VIEW_DIST*VIEW_DIST)continue;
+      const cx=px+dx,cz=pz+dz;
+      if(isInView(cx,cz,px,pz,fwd.x,fwd.z)) buildChunk(cx,cz);
     }
-  }
 }
 
 // ─── COLLISION ───
-function getWalls(cx, cz) {
-  const key = `${cx},${cz}`;
-  const chunk = builtChunks.get(key);
-  if (chunk) return chunk.walls;
-  // Not built yet — compute from current versions
-  return cellWalls(cx, cz);
+function getWalls(cx,cz){
+  const key=`${cx},${cz}`;
+  const chunk=builtChunks.get(key);
+  if(chunk)return chunk.walls;
+  return cellWalls(cx,cz);
 }
 
-function canMove(x, z) {
-  const cx = Math.round(x / T), cz = Math.round(z / T);
-  const lx = x - cx * T, lz = z - cz * T;
-  const m = 0.35;
-  const w = getWalls(cx, cz);
-  if (lz < -T/2 + m && w.n) return false;
-  if (lz > T/2 - m && w.s) return false;
-  if (lx < -T/2 + m && w.w) return false;
-  if (lx > T/2 - m && w.e) return false;
+function canMove(x,z){
+  const cx=Math.round(x/T),cz=Math.round(z/T);
+  const lx=x-cx*T,lz=z-cz*T;
+  const m=0.3;
+  const w=getWalls(cx,cz);
+  if(lz<-T/2+m&&w.n)return false;
+  if(lz>T/2-m&&w.s)return false;
+  if(lx<-T/2+m&&w.w)return false;
+  if(lx>T/2-m&&w.e)return false;
   return true;
 }
 
+// ─── LOG INTERACTION ───
+function checkNearLog(){
+  nearLog=null;
+  const px=camera.position.x,pz=camera.position.z;
+  for(const[key,wl]of worldLogs){
+    const dx=wl.group.position.x-px,dz=wl.group.position.z-pz;
+    if(dx*dx+dz*dz<2.5){ // within ~1.6 units
+      nearLog=wl;
+      break;
+    }
+  }
+  const el=document.getElementById('interact');
+  if(nearLog) el.classList.add('visible');
+  else el.classList.remove('visible');
+}
+
+function pickupLog(){
+  if(!nearLog)return;
+  const id=nearLog.logId;
+  foundLogs.add(id);
+  const key=`${nearLog.cx},${nearLog.cz}`;
+  removeWorldLog(key);
+  nearLog=null;
+  document.getElementById('interact').classList.remove('visible');
+  updateCounter();
+
+  const log=LOGS.find(l=>l.id===id);
+  if(log) showPickup(log.title);
+
+  // Save to localStorage
+  localStorage.setItem('dreamSubwayLogs',JSON.stringify([...foundLogs]));
+}
+
+// Load saved logs
+function loadSavedLogs(){
+  try{
+    const saved=JSON.parse(localStorage.getItem('dreamSubwayLogs')||'[]');
+    for(const id of saved) foundLogs.add(id);
+    updateCounter();
+  }catch(e){}
+}
+
 // ─── AUDIO ───
-let audioCtx, masterGain, humStarted = false;
-function initAudio() {
-  if (humStarted) return;
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  masterGain = audioCtx.createGain(); masterGain.gain.value = 0.5;
+let audioCtx,masterGain,humStarted=false;
+function initAudio(){
+  if(humStarted)return;
+  audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  masterGain=audioCtx.createGain();masterGain.gain.value=0.5;
   masterGain.connect(audioCtx.destination);
 
-  const h = audioCtx.createOscillator(); h.type = 'sawtooth'; h.frequency.value = 60;
-  const hg = audioCtx.createGain(); hg.gain.value = 0.01;
-  const hf = audioCtx.createBiquadFilter(); hf.type = 'lowpass'; hf.frequency.value = 150;
-  h.connect(hf); hf.connect(hg); hg.connect(masterGain); h.start();
+  const h=audioCtx.createOscillator();h.type='sawtooth';h.frequency.value=60;
+  const hg=audioCtx.createGain();hg.gain.value=0.01;
+  const hf=audioCtx.createBiquadFilter();hf.type='lowpass';hf.frequency.value=150;
+  h.connect(hf);hf.connect(hg);hg.connect(masterGain);h.start();
 
-  const buzz = audioCtx.createOscillator(); buzz.type = 'square'; buzz.frequency.value = 120;
-  const buzzG = audioCtx.createGain(); buzzG.gain.value = 0.005;
-  const buzzF = audioCtx.createBiquadFilter(); buzzF.type = 'bandpass'; buzzF.frequency.value = 240; buzzF.Q.value = 8;
-  buzz.connect(buzzF); buzzF.connect(buzzG); buzzG.connect(masterGain); buzz.start();
+  const buzz=audioCtx.createOscillator();buzz.type='square';buzz.frequency.value=120;
+  const buzzG=audioCtx.createGain();buzzG.gain.value=0.005;
+  const buzzF=audioCtx.createBiquadFilter();buzzF.type='bandpass';buzzF.frequency.value=240;buzzF.Q.value=8;
+  buzz.connect(buzzF);buzzF.connect(buzzG);buzzG.connect(masterGain);buzz.start();
 
-  setInterval(() => {
-    if (Math.random() > 0.4) return;
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.12, audioCtx.sampleRate);
-    const dd = buf.getChannelData(0); const freq = 800 + Math.random() * 500;
-    for (let i = 0; i < dd.length; i++) dd[i] = Math.sin(i / audioCtx.sampleRate * freq * Math.PI * 2) * Math.exp(-i / audioCtx.sampleRate * 45) * 0.06;
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random() * 2 - 1;
-    const g = audioCtx.createGain(); g.gain.value = 0.08 + Math.random() * 0.08;
-    src.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
-  }, 4000);
+  setInterval(()=>{
+    if(Math.random()>0.4)return;
+    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.12,audioCtx.sampleRate);
+    const dd=buf.getChannelData(0);const freq=800+Math.random()*500;
+    for(let i=0;i<dd.length;i++)dd[i]=Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)*Math.exp(-i/audioCtx.sampleRate*45)*0.06;
+    const src=audioCtx.createBufferSource();src.buffer=buf;
+    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
+    const g=audioCtx.createGain();g.gain.value=0.08+Math.random()*0.08;
+    src.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
+  },4000);
 
-  setInterval(() => {
-    if (Math.random() > 0.3) return;
-    const dur = 0.6 + Math.random() * 0.4;
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
-    const dd = buf.getChannelData(0); const freq = 35 + Math.random() * 25;
-    for (let i = 0; i < dd.length; i++) { const env = Math.exp(-i / audioCtx.sampleRate * 3); dd[i] = (Math.sin(i / audioCtx.sampleRate * freq * Math.PI * 2) + Math.random() * 0.3) * env * 0.04; }
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 50 + Math.random() * 60; f.Q.value = 5;
-    const g = audioCtx.createGain(); g.gain.value = 0.12;
-    const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random() * 2 - 1;
-    src.connect(f); f.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
-  }, 10000);
+  setInterval(()=>{
+    if(Math.random()>0.3)return;
+    const dur=0.6+Math.random()*0.4;
+    const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*dur,audioCtx.sampleRate);
+    const dd=buf.getChannelData(0);const freq=35+Math.random()*25;
+    for(let i=0;i<dd.length;i++){const env=Math.exp(-i/audioCtx.sampleRate*3);dd[i]=(Math.sin(i/audioCtx.sampleRate*freq*Math.PI*2)+Math.random()*0.3)*env*0.04;}
+    const src=audioCtx.createBufferSource();src.buffer=buf;
+    const f=audioCtx.createBiquadFilter();f.type='bandpass';f.frequency.value=50+Math.random()*60;f.Q.value=5;
+    const g=audioCtx.createGain();g.gain.value=0.12;
+    const pan=audioCtx.createStereoPanner();pan.pan.value=Math.random()*2-1;
+    src.connect(f);f.connect(pan);pan.connect(g);g.connect(masterGain);src.start();
+  },10000);
 
-  humStarted = true;
+  humStarted=true;
 }
 
-let isWalking = false, stepPhase = 0;
-function playStep() {
-  if (!audioCtx) return;
-  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / audioCtx.sampleRate * 50) * 0.2;
-  const src = audioCtx.createBufferSource(); src.buffer = buf;
-  const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 200 + Math.random() * 100;
-  const g = audioCtx.createGain(); g.gain.value = 0.1;
-  src.connect(f); f.connect(g); g.connect(masterGain); src.start();
+let isWalking=false,stepPhase=0;
+function playStep(){
+  if(!audioCtx)return;
+  const buf=audioCtx.createBuffer(1,audioCtx.sampleRate*0.1,audioCtx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=(Math.random()*2-1)*Math.exp(-i/audioCtx.sampleRate*50)*0.2;
+  const src=audioCtx.createBufferSource();src.buffer=buf;
+  const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=200+Math.random()*100;
+  const g=audioCtx.createGain();g.gain.value=0.1;
+  src.connect(f);f.connect(g);g.connect(masterGain);src.start();
 }
-function stepLoop() { if (!isWalking) return; playStep(); stepPhase++; setTimeout(stepLoop, 380 + Math.random() * 60 + (stepPhase % 2 === 0 ? 0 : 40)); }
+function stepLoop(){if(!isWalking)return;playStep();stepPhase++;setTimeout(stepLoop,380+Math.random()*60+(stepPhase%2===0?0:40));}
 
 // ─── CONTROLS ───
-const keys = {};
-addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
-addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+const keys={};
+addEventListener('keydown',e=>{
+  keys[e.key.toLowerCase()]=true;
+  if(e.key.toLowerCase()==='e') pickupLog();
+  if(e.key==='Escape'){
+    if(document.getElementById('log-detail').classList.contains('open')) closeLogDetail();
+    else if(document.getElementById('log-overlay').classList.contains('open')) closeLogOverlay();
+  }
+});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
 
 // ─── INIT ───
-function init() {
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x1a1708);
-  scene.fog = new THREE.FogExp2(0x1a1708, 0.05);
-  clock = new THREE.Clock();
+function init(){
+  scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x1a1708);
+  scene.fog=new THREE.Fog(0x1a1708, 1, 18); // Linear fog: starts close, full at 18 units
+  clock=new THREE.Clock();
 
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(innerWidth, innerHeight);
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.shadowMap.enabled = false;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.shadowMap.enabled=false;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure=1.1;
   document.body.appendChild(renderer.domElement);
 
-  camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 100);
-  camera.position.set(0, 1.6, 0);
+  camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
+  camera.position.set(0,1.5,0);
 
-  scene.add(new THREE.AmbientLight(0xffe8c0, 0.5));
+  scene.add(new THREE.AmbientLight(0xffe8c0,0.45));
 
-  carpetMat = makeCarpet(); wallMat = makeWall(); ceilingMat = makeCeiling();
+  carpetMat=makeCarpet();wallMat=makeWall();ceilingMat=makeCeiling();
 
-  // Initial build — generate everything around start
-  for (let dx = -VIEW_DIST; dx <= VIEW_DIST; dx++)
-    for (let dz = -VIEW_DIST; dz <= VIEW_DIST; dz++)
-      if (dx*dx + dz*dz <= VIEW_DIST*VIEW_DIST) buildChunk(dx, dz);
+  // Initial build
+  for(let dx=-VIEW_DIST;dx<=VIEW_DIST;dx++)
+    for(let dz=-VIEW_DIST;dz<=VIEW_DIST;dz++)
+      if(dx*dx+dz*dz<=VIEW_DIST*VIEW_DIST) buildChunk(dx,dz);
 
-  document.addEventListener('click', () => {
-    document.body.requestPointerLock(); initAudio();
-    document.getElementById('prompt').classList.add('hidden');
-  });
-  document.addEventListener('mousemove', e => {
-    if (document.pointerLockElement) {
-      yaw -= e.movementX * 0.002;
-      pitch -= e.movementY * 0.002;
-      pitch = Math.max(-1.2, Math.min(1.2, pitch));
+  loadSavedLogs();
+
+  document.addEventListener('click',()=>{
+    if(!overlayOpen){
+      document.body.requestPointerLock();initAudio();
+      document.getElementById('prompt').classList.add('hidden');
     }
   });
-  addEventListener('resize', () => {
-    camera.aspect = innerWidth / innerHeight;
+  document.addEventListener('mousemove',e=>{
+    if(document.pointerLockElement){
+      yaw-=e.movementX*0.002;
+      pitch-=e.movementY*0.002;
+      pitch=Math.max(-1.2,Math.min(1.2,pitch));
+    }
+  });
+  addEventListener('resize',()=>{
+    camera.aspect=innerWidth/innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
+    renderer.setSize(innerWidth,innerHeight);
   });
 
   animate();
 }
 
 // ─── LOOP ───
-let updateTimer = 0;
-function animate() {
+let updateTimer=0;
+function animate(){
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.1), t = clock.getElapsedTime();
+  const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
-  const speed = 2.8, dir = new THREE.Vector3();
-  if (keys['w']) dir.z -= 1; if (keys['s']) dir.z += 1;
-  if (keys['a']) dir.x -= 1; if (keys['d']) dir.x += 1;
-  const moving = dir.length() > 0.01;
-  dir.normalize().multiplyScalar(speed * dt);
-  dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
-  const nx = camera.position.x + dir.x, nz = camera.position.z + dir.z;
-  if (canMove(nx, camera.position.z)) camera.position.x = nx;
-  if (canMove(camera.position.x, nz)) camera.position.z = nz;
+  if(!overlayOpen){
+    const speed=2.5,dir=new THREE.Vector3();
+    if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
+    if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
+    const moving=dir.length()>0.01;
+    dir.normalize().multiplyScalar(speed*dt);
+    dir.applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
+    const nx=camera.position.x+dir.x,nz=camera.position.z+dir.z;
+    if(canMove(nx,camera.position.z))camera.position.x=nx;
+    if(canMove(camera.position.x,nz))camera.position.z=nz;
+    camera.position.y=1.5+(moving?Math.sin(t*8)*0.015:0);
+    camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
+    if(moving&&!isWalking){isWalking=true;stepLoop();}
+    else if(!moving)isWalking=false;
+  }
 
-  camera.position.y = 1.6 + (moving ? Math.sin(t * 8) * 0.02 : 0);
-  camera.rotation.order = 'YXZ'; camera.rotation.y = yaw; camera.rotation.x = pitch;
-
-  if (moving && !isWalking) { isWalking = true; stepLoop(); }
-  else if (!moving) isWalking = false;
-
-  // Update world every few frames (not every frame for perf)
-  updateTimer += dt;
-  if (updateTimer > 0.15) {
-    updateTimer = 0;
+  updateTimer+=dt;
+  if(updateTimer>0.15){
+    updateTimer=0;
     updateWorld();
-    const px = Math.round(camera.position.x / T), pz = Math.round(camera.position.z / T);
-    document.getElementById('hud').textContent = `level ${Math.abs(px + pz * 7) % 100}`;
+    checkNearLog();
+    const px=Math.round(camera.position.x/T),pz=Math.round(camera.position.z/T);
+    document.getElementById('hud').textContent=`level ${Math.abs(px+pz*7)%100}`;
   }
 
   // Flicker
-  for (const [, chunk] of builtChunks)
-    for (const l of chunk.lights)
-      if (l.userData.flickering) {
-        const fl = Math.sin(t * 12 + l.userData.phase) * Math.sin(t * 19 + l.userData.phase * 2);
-        const on = fl > -0.2;
-        l.intensity = on ? 0.8 + Math.random() * 0.2 : 0;
-        if (l.userData.tube) { l.userData.tube.material.emissiveIntensity = on ? 0.8 : 0; l.userData.tube.material.color.set(on ? 0xffffee : 0x333333); }
+  for(const[,chunk]of builtChunks)
+    for(const l of chunk.lights)
+      if(l.userData.flickering){
+        const fl=Math.sin(t*12+l.userData.phase)*Math.sin(t*19+l.userData.phase*2);
+        const on=fl>-0.2;
+        l.intensity=on?0.7+Math.random()*0.2:0;
+        if(l.userData.tube){l.userData.tube.material.emissiveIntensity=on?0.8:0;l.userData.tube.material.color.set(on?0xffffee:0x333333);}
       }
 
-  renderer.render(scene, camera);
+  renderer.render(scene,camera);
 }
 
 init();
