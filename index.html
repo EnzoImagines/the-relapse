@@ -292,7 +292,7 @@ let frameGeo, paintingGeos, paintingMats;
 function initResources(){
   // Textures + materials
   carpetMat=makeCarpetMat(); wallMat=makeWallMat(); ceilingMat=makeCeilingMat();
-  lightOnMat=new THREE.MeshStandardMaterial({color:0xffffee,emissive:0xffffdd,emissiveIntensity:0.8});
+  lightOnMat=new THREE.MeshStandardMaterial({color:0xffffee,emissive:0xffffdd,emissiveIntensity:0.4});
   lightOffMat=new THREE.MeshStandardMaterial({color:0x333333});
   paperMat=new THREE.MeshStandardMaterial({color:0xeee8d5,roughness:0.7,side:THREE.DoubleSide});
   tableMat=new THREE.MeshStandardMaterial({color:0x665544,roughness:0.8});
@@ -551,7 +551,7 @@ function buildChunk(cx,cz){
   tube.position.set(wx,H-0.04,wz);scene.add(tube);meshes.push(tube);
 
   if(hasReal){
-    const l=new THREE.PointLight(0xffeedd,0.9,T*2.5);
+    const l=new THREE.PointLight(0xffeedd,0.4,T*2);
     l.position.set(wx,H-0.1,wz);scene.add(l);lights.push(l);
     if(flickering){l.userData.flickering=true;l.userData.phase=lr*20;l.userData.tube=tube;}
   }
@@ -569,26 +569,32 @@ function buildChunk(cx,cz){
     if(wallDirs.length>0){
       const pickDir=wallDirs[(ph>>>8)%wallDirs.length];
       const artIdx=((ph>>>4)%12);
-      const painting=new THREE.Mesh(paintingGeos[artIdx],paintingMats[artIdx]);
-      const frameDepth=0.12;
       const py=H*0.48+((ph>>>16)%20-10)*0.005;
-      if(pickDir==='n'){painting.position.set(wx,py,wz-T/2+frameDepth);}
-      else if(pickDir==='s'){painting.position.set(wx,py,wz+T/2-frameDepth);painting.rotation.y=Math.PI;}
-      else if(pickDir==='w'){painting.position.set(wx-T/2+frameDepth,py,wz);painting.rotation.y=Math.PI/2;}
-      else{painting.position.set(wx+T/2-frameDepth,py,wz);painting.rotation.y=-Math.PI/2;}
-      scene.add(painting);meshes.push(painting);
-
-      // Frame (dark wood border)
-      const frameMat=new THREE.MeshStandardMaterial({color:0x3a2a1a,roughness:0.85});
       const sz=paintingGeos[artIdx].parameters;
-      const fw=sz.width+0.06, fh=sz.height+0.06;
-      const frame=new THREE.Mesh(new THREE.BoxGeometry(fw,fh,0.03),frameMat);
-      frame.position.copy(painting.position);
-      frame.rotation.copy(painting.rotation);
-      // Nudge frame slightly behind painting
-      const backDir=new THREE.Vector3(0,0,-0.015).applyEuler(painting.rotation);
-      frame.position.add(backDir);
+      const fw=sz.width+0.08, fh=sz.height+0.08;
+
+      // Frame first (sits against wall), then painting in front of frame
+      const frameMat=new THREE.MeshStandardMaterial({color:0x3a2a1a,roughness:0.85});
+      const frame=new THREE.Mesh(new THREE.BoxGeometry(fw,fh,0.04),frameMat);
+      const painting=new THREE.Mesh(paintingGeos[artIdx],paintingMats[artIdx]);
+
+      // Wall offset: frame flush against wall, painting 0.025 in front
+      const wallOff=0.12, paintOff=wallOff+0.025;
+      if(pickDir==='n'){
+        frame.position.set(wx,py,wz-T/2+wallOff);
+        painting.position.set(wx,py,wz-T/2+paintOff);
+      } else if(pickDir==='s'){
+        frame.position.set(wx,py,wz+T/2-wallOff);frame.rotation.y=Math.PI;
+        painting.position.set(wx,py,wz+T/2-paintOff);painting.rotation.y=Math.PI;
+      } else if(pickDir==='w'){
+        frame.position.set(wx-T/2+wallOff,py,wz);frame.rotation.y=Math.PI/2;
+        painting.position.set(wx-T/2+paintOff,py,wz);painting.rotation.y=Math.PI/2;
+      } else {
+        frame.position.set(wx+T/2-wallOff,py,wz);frame.rotation.y=-Math.PI/2;
+        painting.position.set(wx+T/2-paintOff,py,wz);painting.rotation.y=-Math.PI/2;
+      }
       scene.add(frame);meshes.push(frame);
+      scene.add(painting);meshes.push(painting);
     }
   }
 
@@ -797,8 +803,8 @@ addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
 // ─── INIT ───
 function init(){
   scene=new THREE.Scene();
-  scene.background=new THREE.Color(0x1a1708);
-  scene.fog=new THREE.Fog(0x1a1708, 1, 18); // Linear fog: starts close, full at 18 units
+  scene.background=new THREE.Color(0x080604);
+  scene.fog=new THREE.Fog(0x080604, 2, 20); // Linear fog: starts close, full at 18 units
   clock=new THREE.Clock();
 
   renderer=new THREE.WebGLRenderer({antialias:true});
@@ -806,16 +812,16 @@ function init(){
   renderer.setPixelRatio(Math.min(devicePixelRatio,2));
   renderer.shadowMap.enabled=false;
   renderer.toneMapping=THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure=1.1;
+  renderer.toneMappingExposure=0.65;
   document.body.appendChild(renderer.domElement);
 
   camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
   camera.position.set(0,1.5,0);
 
-  scene.add(new THREE.AmbientLight(0xffe8c0,0.35));
+  scene.add(new THREE.AmbientLight(0x111008,0.15));
 
-  // Flashlight
-  flashlight = new THREE.SpotLight(0xffeedd, 1.5, 16, Math.PI/6.5, 0.5, 1.4);
+  // Flashlight — big and bright
+  flashlight = new THREE.SpotLight(0xffeedd, 3.5, 22, Math.PI/5, 0.35, 1.0);
   scene.add(flashlight);
   flashlightTarget = new THREE.Object3D();
   scene.add(flashlightTarget);
