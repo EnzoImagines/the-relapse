@@ -80,14 +80,44 @@
   }
   #log-detail-close:hover { color: #aa9960; }
 
-  /* Pickup notification */
-  #pickup-toast {
-    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    color: #aa9960; font-size: 14px; z-index: 50; pointer-events: none;
-    opacity: 0; transition: opacity 0.5s; text-align: center;
-    background: rgba(0,0,0,0.7); padding: 12px 24px; border: 1px solid rgba(100,90,60,0.3);
+  /* Paper dialog */
+  #paper-dialog {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 380px; max-height: 70vh; z-index: 250;
+    display: none; flex-direction: column;
+    padding: 40px 36px 30px;
+    background: #f4eed8;
+    background-image:
+      linear-gradient(rgba(120,110,80,0.07) 1px, transparent 1px);
+    background-size: 100% 26px;
+    box-shadow: 4px 6px 20px rgba(0,0,0,0.6), inset 0 0 40px rgba(180,170,140,0.2);
+    border: none;
+    font-family: 'Courier New', monospace;
+    overflow-y: auto;
   }
-  #pickup-toast.visible { opacity: 1; }
+  #paper-dialog::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 60% 20%, rgba(255,250,230,0.3), transparent 70%),
+                radial-gradient(ellipse at 20% 80%, rgba(160,140,100,0.1), transparent 60%);
+    pointer-events: none;
+  }
+  #paper-dialog.open { display: flex; }
+  #paper-title {
+    color: #4a4030; font-size: 15px; font-weight: bold;
+    margin-bottom: 16px; text-align: center;
+    border-bottom: 1px solid rgba(100,90,60,0.2); padding-bottom: 10px;
+  }
+  #paper-text {
+    color: #3a3020; font-size: 12px; line-height: 1.85;
+    white-space: pre-wrap; position: relative;
+  }
+  #paper-close {
+    margin-top: 20px; align-self: center;
+    color: #887755; font-size: 11px; cursor: pointer;
+    opacity: 0.6; transition: opacity 0.2s;
+  }
+  #paper-close:hover { opacity: 1; }
 </style>
 </head>
 <body>
@@ -95,7 +125,11 @@
 <div id="hud">level 0</div>
 <div id="interact">press E to read</div>
 <div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
-<div id="pickup-toast"></div>
+<div id="paper-dialog">
+  <div id="paper-title"></div>
+  <div id="paper-text"></div>
+  <div id="paper-close" onclick="closePaper()">[ press ESC or click to close ]</div>
+</div>
 
 <div id="log-overlay">
   <span id="log-close" onclick="closeLogOverlay()">✕</span>
@@ -153,11 +187,18 @@ function renderLogList() {
 function updateCounter() {
   document.getElementById('log-counter').textContent = `📋 Logs: ${foundLogs.size} / 50`;
 }
-function showPickup(title) {
-  const el = document.getElementById('pickup-toast');
-  el.textContent = `Found: ${title}`;
-  el.classList.add('visible');
-  setTimeout(() => el.classList.remove('visible'), 2500);
+let paperOpen = false;
+function showPaper(log) {
+  document.exitPointerLock();
+  document.getElementById('paper-title').textContent = log.title;
+  document.getElementById('paper-text').textContent = log.text;
+  document.getElementById('paper-dialog').classList.add('open');
+  paperOpen = true;
+}
+function closePaper() {
+  document.getElementById('paper-dialog').classList.remove('open');
+  paperOpen = false;
+  document.body.requestPointerLock();
 }
 </script>
 
@@ -214,11 +255,15 @@ function getVersion(cx,cz){ const k=`${cx},${cz}`; if(!chunkVersions.has(k))chun
 function bumpVersion(cx,cz){ const k=`${cx},${cz}`; const v=(chunkVersions.get(k)||0)+1; chunkVersions.set(k,v); return v; }
 
 function edgeHasWall(x1,z1,x2,z2){
+  // Guarantee spawn area is open — no walls within 2 cells of origin at version 0
+  const d1=Math.abs(x1)+Math.abs(z1), d2=Math.abs(x2)+Math.abs(z2);
   const v1=getVersion(x1,z1),v2=getVersion(x2,z2);
+  if(d1<=2 && d2<=2 && v1===0 && v2===0) return false;
+
   let h=(x1*374761393+z1*668265263+x2*982451653+z2*271828183+v1*314159+v2*161803)|0;
   h=(h^(h>>>13))*1274126177; h=(h^(h>>>16));
   const r=((h>>>0)%1000)/1000;
-  return r < 0.55; // 55% walls = more corridor-like, fewer open areas
+  return r < 0.55;
 }
 
 function cellWalls(cx,cz){
@@ -428,7 +473,7 @@ function pickupLog(){
   updateCounter();
 
   const log=LOGS.find(l=>l.id===id);
-  if(log) showPickup(log.title);
+  if(log) showPaper(log);
 
   // Save to localStorage
   localStorage.setItem('dreamSubwayLogs',JSON.stringify([...foundLogs]));
@@ -507,7 +552,8 @@ addEventListener('keydown',e=>{
   keys[e.key.toLowerCase()]=true;
   if(e.key.toLowerCase()==='e') pickupLog();
   if(e.key==='Escape'){
-    if(document.getElementById('log-detail').classList.contains('open')) closeLogDetail();
+    if(paperOpen) closePaper();
+    else if(document.getElementById('log-detail').classList.contains('open')) closeLogDetail();
     else if(document.getElementById('log-overlay').classList.contains('open')) closeLogOverlay();
   }
 });
@@ -543,7 +589,7 @@ function init(){
   loadSavedLogs();
 
   document.addEventListener('click',()=>{
-    if(!overlayOpen){
+    if(!overlayOpen&&!paperOpen){
       document.body.requestPointerLock();initAudio();
       document.getElementById('prompt').classList.add('hidden');
     }
@@ -570,7 +616,7 @@ function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
-  if(!overlayOpen){
+  if(!overlayOpen&&!paperOpen){
     const speed=2.5,dir=new THREE.Vector3();
     if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
     if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
