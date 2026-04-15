@@ -197,6 +197,25 @@
     opacity: 0.6; transition: opacity 0.2s;
   }
   #paper-close:hover { opacity: 1; }
+
+  /* Heartbeat vignette overlay */
+  #heartbeat-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 5; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(80,0,0,0.6) 100%);
+    transition: opacity 0.3s;
+  }
+  #heartbeat-overlay.pulse {
+    animation: heartbeat-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes heartbeat-pulse {
+    0% { opacity: 0; }
+    15% { opacity: 0.7; }
+    30% { opacity: 0.2; }
+    45% { opacity: 0.6; }
+    70% { opacity: 0.1; }
+    100% { opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -207,6 +226,8 @@
   <div id="log-counter" onclick="openLogOverlay()">📋 Logs: 0 / 50</div>
   <div id="log-hint">[ L ] open journal</div>
 </div>
+
+<div id="heartbeat-overlay"></div>
 
 <div id="esc-menu">
   <h2>THE RELAPSE</h2>
@@ -361,61 +382,156 @@ import { LOGS } from './logs.js';
 window.logData = LOGS;
 
 let scene, camera, renderer, clock;
-let flashlight, flashlightTarget;
+let flashlight, flashlightTarget, playerGlow;
 let yaw = 0, pitch = 0;
-const T = 3.0, H = 2.8; // Narrower tiles, lower ceiling
+const BASE_T = 3.0, H = 2.8;
+let T = BASE_T; // Current corridor width (may shrink with progressive horror)
 
 const VIEW_DIST = 5;
 const chunkVersions = new Map();
 const builtChunks = new Map();
 
 // Log objects in the world
-const worldLogs = new Map(); // "cx,cz" -> { mesh, id }
-let nearLog = null; // log currently in range
+const worldLogs = new Map();
+let nearLog = null;
+
+// ─── PROGRESSIVE HORROR STATE ───
+const sessionStartTime = Date.now();
+let progressiveNarrow = 1.0;
+let progressiveLightFail = 0;
+let progressiveFogDensity = 1.0;
+
+function getSessionMinutes() { return (Date.now() - sessionStartTime) / 60000; }
+function updateProgressive() {
+  const mins = getSessionMinutes();
+  progressiveNarrow = mins >= 5 ? 0.95 : 1.0;
+  progressiveLightFail = mins >= 10 ? 0.4 : 0;
+  progressiveFogDensity = mins >= 20 ? 1.2 : 1.0;
+  // Update fog
+  if (scene && scene.fog) {
+    scene.fog.near = 1.5;
+    scene.fog.far = 16 / progressiveFogDensity;
+  }
+}
+
+// ─── SHADOW FIGURE STATE ───
+let shadowFigure = null; // { group, spawnTime, fadeStart }
+let lastShadowCheck = 0;
+const SHADOW_CHECK_INTERVAL = 45 + Math.random() * 15; // 45-60s
+
+// ─── RANDOM EVENT STATE ───
+let lastLightsOut = 0;
+let lightsOutActive = false;
+let lightsOutEnd = 0;
+let lastDoorSlam = 0;
+let nextDoorSlam = 30 + Math.random() * 30;
+let lastWhisper = 0;
+let nextWhisper = 40 + Math.random() * 40;
+let playerStillTime = 0;
+let lastPlayerPos = new THREE.Vector3();
+let breathingNode = null;
+let breathingGain = null;
 
 // ─── SHARED GEOMETRY + MATERIALS (allocated once) ───
 let carpetMat, wallMat, ceilingMat;
 let floorGeo, ceilGeo, wallNSGeo, wallEWGeo, tubeGeo, lightOnMat, lightOffMat;
 let paperGeo, paperMat, tableTopGeo, tableLegGeo, tableMat;
 let frameGeo, paintingGeos, paintingMats;
+let baseboardNSGeo, baseboardEWGeo, baseboardMat;
+let wallWritingGeo, wallWritingMats; // shared writing textures
+let shadowMat; // for shadow figure
 
 function initResources(){
-  // Textures + materials
-  carpetMat=makeCarpetMat(); wallMat=makeWallMat(); ceilingMat=makeCeilingMat();
-  lightOnMat=new THREE.MeshStandardMaterial({color:0xddeedd,emissive:0xccddcc,emissiveIntensity:0.35});
-  lightOffMat=new THREE.MeshStandardMaterial({color:0x1a1a1a});
-  paperMat=new THREE.MeshStandardMaterial({color:0xd8d0c0,roughness:0.75,side:THREE.DoubleSide});
-  tableMat=new THREE.MeshStandardMaterial({color:0x3a3530,roughness:0.85});
+  carpetMat = makeFloorMat();
+  wallMat = makeWallMat();
+  ceilingMat = makeCeilingMat();
 
-  // Shared geometry — created ONCE, reused by every chunk
-  const WT=0.2;
-  floorGeo=new THREE.PlaneGeometry(T,T);
-  ceilGeo=new THREE.PlaneGeometry(T,T);
-  wallNSGeo=new THREE.BoxGeometry(T+WT,H,WT);
-  wallEWGeo=new THREE.BoxGeometry(WT,H,T+WT);
-  tubeGeo=new THREE.BoxGeometry(0.9,0.04,0.1);
-  paperGeo=new THREE.PlaneGeometry(0.3,0.4);
-  tableTopGeo=new THREE.BoxGeometry(0.7,0.04,0.5);
-  tableLegGeo=new THREE.BoxGeometry(0.04,0.55,0.04);
+  // Light fixture materials — greenish-white
+  lightOnMat = new THREE.MeshStandardMaterial({color:0xc8ddc8, emissive:0xaaccaa, emissiveIntensity:0.4});
+  lightOffMat = new THREE.MeshStandardMaterial({color:0x1a1a1a});
 
-  // Paintings — generate 12 procedural artworks
-  frameGeo=new THREE.BoxGeometry(0.04,0.04,0.04); // reused for frame edges
-  paintingGeos=[];
-  paintingMats=[];
-  const sizes=[[0.8,0.6],[0.6,0.8],[0.7,0.5],[0.5,0.7],[0.9,0.6],[0.6,0.9]];
-  for(let i=0;i<12;i++){
-    const sz=sizes[i%sizes.length];
-    paintingGeos.push(new THREE.PlaneGeometry(sz[0],sz[1]));
-    paintingMats.push(makeArtwork(i,sz[0]*256|0,sz[1]*256|0));
+  paperMat = new THREE.MeshStandardMaterial({color:0xd8d0c0, roughness:0.75, side:THREE.DoubleSide});
+  tableMat = new THREE.MeshStandardMaterial({color:0x3a3530, roughness:0.85});
+
+  // Shared geometry
+  const WT = 0.2;
+  floorGeo = new THREE.PlaneGeometry(T, T);
+  ceilGeo = new THREE.PlaneGeometry(T, T);
+  wallNSGeo = new THREE.BoxGeometry(T + WT, H, WT);
+  wallEWGeo = new THREE.BoxGeometry(WT, H, T + WT);
+  tubeGeo = new THREE.BoxGeometry(1.5, 0.03, 0.08); // longer strip lights
+  paperGeo = new THREE.PlaneGeometry(0.3, 0.4);
+  tableTopGeo = new THREE.BoxGeometry(0.7, 0.04, 0.5);
+  tableLegGeo = new THREE.BoxGeometry(0.04, 0.55, 0.04);
+
+  // Baseboards
+  baseboardNSGeo = new THREE.BoxGeometry(T + WT, 0.15, 0.04);
+  baseboardEWGeo = new THREE.BoxGeometry(0.04, 0.15, T + WT);
+  baseboardMat = new THREE.MeshStandardMaterial({color:0x1a1210, roughness:0.85});
+
+  // Shadow figure material
+  shadowMat = new THREE.MeshBasicMaterial({color:0x000000, transparent:true, opacity:1.0});
+
+  // Paintings — generate 15 procedural artworks (12 original + 3 new)
+  frameGeo = new THREE.BoxGeometry(0.04, 0.04, 0.04);
+  paintingGeos = [];
+  paintingMats = [];
+  const sizes = [[0.8,0.6],[0.6,0.8],[0.7,0.5],[0.5,0.7],[0.9,0.6],[0.6,0.9]];
+  for(let i = 0; i < 15; i++){
+    const sz = sizes[i % sizes.length];
+    paintingGeos.push(new THREE.PlaneGeometry(sz[0], sz[1]));
+    paintingMats.push(makeArtwork(i, sz[0]*256|0, sz[1]*256|0));
+  }
+
+  // Wall writing textures — pre-generate a set
+  wallWritingGeo = new THREE.PlaneGeometry(0.8, 0.4);
+  wallWritingMats = [];
+  const messages = ["TURN BACK","IT SEES YOU","I WAS HERE","DON'T LOOK BEHIND YOU","DAY ????","HELP","|||| |||| |||"];
+  for(const msg of messages){
+    wallWritingMats.push(makeWallWritingMat(msg));
   }
 }
 
-function makeArtwork(seed,w,h){
-  const c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d');
-  let s=seed*2654435761;
-  const r=()=>{s=(s*48271+1)&0x7fffffff;return s/0x7fffffff;};
+function makeWallWritingMat(text){
+  const c = document.createElement('canvas'); c.width = 256; c.height = 128;
+  const x = c.getContext('2d');
+  x.clearRect(0, 0, 256, 128);
+  // Scratchy handwriting style
+  x.fillStyle = 'rgba(60,40,30,0.7)';
+  x.font = 'italic bold 22px Courier New';
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  // Draw text with jitter for scratchy effect
+  for(let i = 0; i < text.length; i++){
+    const cx = 40 + i * (176 / text.length) + (Math.random()-0.5)*3;
+    const cy = 64 + (Math.random()-0.5)*8;
+    const angle = (Math.random()-0.5)*0.15;
+    x.save();
+    x.translate(cx, cy);
+    x.rotate(angle);
+    x.fillText(text[i], 0, 0);
+    x.restore();
+  }
+  // Add scratches
+  for(let s = 0; s < 8; s++){
+    x.beginPath();
+    x.moveTo(Math.random()*256, Math.random()*128);
+    x.lineTo(Math.random()*256, Math.random()*128);
+    x.strokeStyle = `rgba(50,35,25,${0.1+Math.random()*0.15})`;
+    x.lineWidth = 0.5 + Math.random();
+    x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  return new THREE.MeshBasicMaterial({map:t, transparent:true, side:THREE.DoubleSide, depthWrite:false});
+}
 
-  const style=Math.floor(r()*7);
+function makeArtwork(seed, w, h){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  let s = seed * 2654435761;
+  const r = () => { s = (s*48271+1) & 0x7fffffff; return s/0x7fffffff; };
+
+  const style = Math.floor(r() * 10); // expanded to 10 styles
   switch(style){
     case 0: // Corridor perspective (recursive hallway)
       x.fillStyle='#0a0a08';x.fillRect(0,0,w,h);
@@ -429,13 +545,10 @@ function makeArtwork(seed,w,h){
       break;
     case 1: // Face that's almost there
       x.fillStyle=`hsl(${150+r()*30},8%,${12+r()*8}%)`;x.fillRect(0,0,w,h);
-      // Vague oval
       x.beginPath();x.ellipse(w/2,h*0.4,w*0.22,h*0.28,0,0,Math.PI*2);
       x.fillStyle=`hsla(${140+r()*20},5%,${18+r()*8}%,0.4)`;x.fill();
-      // Eye sockets
       x.beginPath();x.ellipse(w*0.38,h*0.35,6,4,0,0,Math.PI*2);x.fillStyle='rgba(5,5,3,0.5)';x.fill();
       x.beginPath();x.ellipse(w*0.62,h*0.35,6,4,0,0,Math.PI*2);x.fill();
-      // Mouth line
       x.beginPath();x.moveTo(w*0.4,h*0.55);x.quadraticCurveTo(w*0.5,h*0.58+r()*10,w*0.6,h*0.55);
       x.strokeStyle='rgba(5,5,3,0.3)';x.lineWidth=1;x.stroke();
       break;
@@ -445,18 +558,14 @@ function makeArtwork(seed,w,h){
         x.fillStyle=`rgb(${brightness},${brightness+r()*5},${brightness-r()*3})`;
         x.fillRect(0,i,w,1);
       }
-      // Horizontal tear
       const tearY=h*0.3+r()*h*0.4;
       x.fillStyle='rgba(0,0,0,0.8)';x.fillRect(0,tearY,w,2+r()*4);
       break;
-    case 3: // Empty room (painting of a room inside a room)
+    case 3: // Empty room
       x.fillStyle='#1a1815';x.fillRect(0,0,w,h);
-      // Floor
       x.fillStyle='#252220';x.fillRect(0,h*0.6,w,h*0.4);
-      // Back wall
       x.fillStyle='#2a2825';
       x.beginPath();x.moveTo(w*0.15,h*0.15);x.lineTo(w*0.85,h*0.15);x.lineTo(w*0.85,h*0.6);x.lineTo(w*0.15,h*0.6);x.fill();
-      // Door (slightly ajar)
       x.fillStyle='#0a0908';x.fillRect(w*0.42,h*0.25,w*0.16,h*0.35);
       x.fillStyle='rgba(100,80,40,0.06)';x.fillRect(w*0.42,h*0.25,w*0.03,h*0.35);
       break;
@@ -466,125 +575,323 @@ function makeArtwork(seed,w,h){
         x.save();x.translate(r()*w,r()*h);x.rotate(r()*Math.PI*2);x.scale(0.3+r()*0.4,0.3+r()*0.4);
         x.beginPath();x.ellipse(0,0,20,28,0,0,Math.PI*2);
         x.fillStyle=`rgba(${30+r()*20},${15+r()*10},${10+r()*8},${0.15+r()*0.2})`;x.fill();
-        // Fingers
         for(let f=0;f<5;f++){
           x.beginPath();x.ellipse(-12+f*6,-32-r()*5,3,8+r()*4,r()*0.3,0,Math.PI*2);x.fill();
         }
         x.restore();
       }
       break;
-    case 5: // Map/diagram (looks like someone tried to map the corridors)
+    case 5: // Map/diagram
       x.fillStyle='#1c1a15';x.fillRect(0,0,w,h);
       x.strokeStyle='rgba(100,90,60,0.2)';x.lineWidth=0.5;
-      // Grid
       for(let g=0;g<10;g++){x.beginPath();x.moveTo(g*w/10,0);x.lineTo(g*w/10,h);x.stroke();x.beginPath();x.moveTo(0,g*h/10);x.lineTo(w,g*h/10);x.stroke();}
-      // Random corridor lines
       x.strokeStyle='rgba(140,120,70,0.3)';x.lineWidth=2;
       for(let l=0;l<8;l++){x.beginPath();x.moveTo(r()*w,r()*h);x.lineTo(r()*w,r()*h);x.stroke();}
-      // X marks
       x.strokeStyle='rgba(120,40,30,0.25)';x.lineWidth=1.5;
       for(let m=0;m<3;m++){const mx=r()*w,my=r()*h;x.beginPath();x.moveTo(mx-5,my-5);x.lineTo(mx+5,my+5);x.stroke();x.beginPath();x.moveTo(mx+5,my-5);x.lineTo(mx-5,my+5);x.stroke();}
-      // "YOU ARE HERE" (too small to read, just a smudge)
       x.fillStyle='rgba(120,40,30,0.15)';x.fillRect(w*0.4,h*0.5,w*0.2,4);
       break;
-    case 6: // Blackened — painting that's been burned or painted over
+    case 6: // Blackened/burned painting
       x.fillStyle='#0d0c0a';x.fillRect(0,0,w,h);
       for(let i=0;i<3000;i++){const b=8+r()*18;x.fillStyle=`rgb(${b},${b-1},${b-2})`;x.fillRect(r()*w,r()*h,1+r()*3,1+r()*3);}
-      // Ghost of original image showing through
       x.beginPath();x.ellipse(w*0.5,h*0.4,w*0.18,h*0.2,0,0,Math.PI*2);
       x.fillStyle='rgba(30,28,22,0.3)';x.fill();
       break;
+    case 7: // NEW: Mirror (reflective grey rectangle)
+      x.fillStyle='#2a2a2e';x.fillRect(0,0,w,h);
+      // Gradient for fake reflection
+      const mirGrd = x.createLinearGradient(0,0,w,h);
+      mirGrd.addColorStop(0,'rgba(60,60,65,0.4)');
+      mirGrd.addColorStop(0.3,'rgba(40,40,45,0.2)');
+      mirGrd.addColorStop(0.7,'rgba(50,50,55,0.3)');
+      mirGrd.addColorStop(1,'rgba(35,35,40,0.4)');
+      x.fillStyle=mirGrd;x.fillRect(0,0,w,h);
+      // Faint silhouette in center (viewer's reflection)
+      x.beginPath();x.ellipse(w*0.5,h*0.3,w*0.08,h*0.1,0,0,Math.PI*2);
+      x.fillStyle='rgba(20,20,22,0.25)';x.fill();
+      x.fillStyle='rgba(20,20,22,0.2)';x.fillRect(w*0.43,h*0.4,w*0.14,h*0.35);
+      // Smudges
+      for(let i=0;i<5;i++){
+        x.beginPath();x.arc(r()*w,r()*h,5+r()*15,0,Math.PI*2);
+        x.fillStyle=`rgba(50,50,55,${0.05+r()*0.1})`;x.fill();
+      }
+      // Edge tarnish
+      x.strokeStyle='rgba(20,20,18,0.3)';x.lineWidth=3;x.strokeRect(2,2,w-4,h-4);
+      break;
+    case 8: // NEW: Corridor painting (identical to the one you're in)
+      x.fillStyle='#0d0c0a';x.fillRect(0,0,w,h);
+      // Dark hardwood floor
+      x.fillStyle='#1a1512';x.fillRect(0,h*0.55,w,h*0.45);
+      // Floor boards
+      for(let i=0;i<8;i++){
+        x.strokeStyle='rgba(10,8,5,0.3)';x.lineWidth=0.5;
+        x.beginPath();x.moveTo(i*w/8,h*0.55);x.lineTo(w*0.5,h*0.55);x.stroke();
+      }
+      // Wallpaper walls with perspective
+      x.fillStyle='#2a2520';
+      x.beginPath();x.moveTo(0,0);x.lineTo(w*0.25,h*0.2);x.lineTo(w*0.25,h*0.55);x.lineTo(0,h);x.fill();
+      x.beginPath();x.moveTo(w,0);x.lineTo(w*0.75,h*0.2);x.lineTo(w*0.75,h*0.55);x.lineTo(w,h);x.fill();
+      // Back wall
+      x.fillStyle='#22201a';x.fillRect(w*0.25,h*0.2,w*0.5,h*0.35);
+      // Ceiling
+      x.fillStyle='#1a1815';
+      x.beginPath();x.moveTo(0,0);x.lineTo(w*0.25,h*0.2);x.lineTo(w*0.75,h*0.2);x.lineTo(w,0);x.fill();
+      // Strip light in ceiling
+      x.fillStyle='rgba(150,170,150,0.15)';x.fillRect(w*0.4,h*0.08,w*0.2,h*0.03);
+      // Vanishing point light
+      x.beginPath();x.arc(w*0.5,h*0.37,3,0,Math.PI*2);
+      x.fillStyle='rgba(140,160,140,0.2)';x.fill();
+      break;
+    case 9: // NEW: Child's drawing (faceless stick figures)
+      x.fillStyle='#f0e8d0';x.fillRect(0,0,w,h); // paper-colored background
+      // Crayon-style sky
+      x.fillStyle='rgba(100,150,200,0.3)';x.fillRect(0,0,w,h*0.4);
+      // Sun (no face)
+      x.beginPath();x.arc(w*0.8,h*0.15,15,0,Math.PI*2);
+      x.fillStyle='rgba(220,180,40,0.6)';x.fill();
+      for(let ray=0;ray<8;ray++){
+        const a=ray*Math.PI/4;
+        x.beginPath();x.moveTo(w*0.8+Math.cos(a)*18,h*0.15+Math.sin(a)*18);
+        x.lineTo(w*0.8+Math.cos(a)*28,h*0.15+Math.sin(a)*28);
+        x.strokeStyle='rgba(220,180,40,0.4)';x.lineWidth=2;x.stroke();
+      }
+      // House
+      x.fillStyle='rgba(180,80,60,0.5)';x.fillRect(w*0.55,h*0.45,w*0.25,h*0.3);
+      x.beginPath();x.moveTo(w*0.53,h*0.45);x.lineTo(w*0.675,h*0.3);x.lineTo(w*0.82,h*0.45);
+      x.fillStyle='rgba(120,60,40,0.5)';x.fill();
+      x.fillStyle='rgba(40,40,40,0.4)';x.fillRect(w*0.63,h*0.55,w*0.08,h*0.2);
+      // Ground
+      x.fillStyle='rgba(80,140,60,0.3)';x.fillRect(0,h*0.75,w,h*0.25);
+      // Stick figures — NO FACES
+      for(let fig=0;fig<3;fig++){
+        const fx = w*0.15 + fig*w*0.15;
+        const fy = h*0.55;
+        x.strokeStyle='rgba(30,30,30,0.6)';x.lineWidth=2;
+        // Head (empty circle — no face!)
+        x.beginPath();x.arc(fx,fy,8,0,Math.PI*2);x.stroke();
+        // Body
+        x.beginPath();x.moveTo(fx,fy+8);x.lineTo(fx,fy+35);x.stroke();
+        // Arms
+        x.beginPath();x.moveTo(fx-12,fy+18);x.lineTo(fx+12,fy+18);x.stroke();
+        // Legs
+        x.beginPath();x.moveTo(fx,fy+35);x.lineTo(fx-10,fy+50);x.stroke();
+        x.beginPath();x.moveTo(fx,fy+35);x.lineTo(fx+10,fy+50);x.stroke();
+      }
+      // Aging/crumpling the drawing
+      for(let n=0;n<200;n++){
+        x.fillStyle=`rgba(140,120,80,${r()*0.08})`;
+        x.fillRect(r()*w,r()*h,1+r()*3,1+r()*3);
+      }
+      // Stain
+      x.beginPath();x.arc(r()*w,r()*h,10+r()*20,0,Math.PI*2);
+      x.fillStyle='rgba(100,80,50,0.08)';x.fill();
+      break;
+    default: // Fallback — abstract dark
+      x.fillStyle='#0d0c0a';x.fillRect(0,0,w,h);
+      for(let i=0;i<2000;i++){const b=8+r()*18;x.fillStyle=`rgb(${b},${b-1},${b-2})`;x.fillRect(r()*w,r()*h,1+r()*3,1+r()*3);}
+      break;
   }
-  // Aging/noise + slight green tint
+
+  // Aging/noise + vignette
   for(let n=0;n<600;n++){
     const nv=r()>0.5?0:40+r()*20;
     x.fillStyle=`rgba(${nv},${nv+5},${nv-3},${r()*0.05})`;
     x.fillRect(r()*w,r()*h,1+r()*2,1+r()*2);
   }
-  // Heavy vignette
   const grd=x.createRadialGradient(w/2,h/2,Math.min(w,h)*0.2,w/2,h/2,Math.max(w,h)*0.7);
   grd.addColorStop(0,'transparent');grd.addColorStop(1,'rgba(0,0,0,0.6)');
   x.fillStyle=grd;x.fillRect(0,0,w,h);
   const t=new THREE.CanvasTexture(c);
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.8});
+  return new THREE.MeshStandardMaterial({map:t, roughness:0.8});
 }
 
-function makeCarpetMat(){
-  const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');
-  // Dark concrete/linoleum floor — cracked, stained, institutional
-  x.fillStyle='#2a2825';x.fillRect(0,0,512,512);
-  // Subtle tile grid
-  x.strokeStyle='rgba(20,18,15,0.4)';x.lineWidth=1;
-  for(let i=0;i<=4;i++){x.beginPath();x.moveTo(i*128,0);x.lineTo(i*128,512);x.stroke();x.beginPath();x.moveTo(0,i*128);x.lineTo(512,i*128);x.stroke();}
-  // Surface noise
-  for(let i=0;i<12000;i++){const b=30+Math.random()*25;x.fillStyle=`rgb(${b},${b-2},${b-4})`;x.fillRect(Math.random()*512,Math.random()*512,1+Math.random()*2,1+Math.random()*2);}
-  // Cracks
-  for(let s=0;s<6;s++){x.beginPath();x.moveTo(Math.random()*512,Math.random()*512);for(let j=0;j<4;j++)x.lineTo(x.canvas.width*Math.random(),x.canvas.height*Math.random());x.strokeStyle=`rgba(15,12,10,${0.2+Math.random()*0.3})`;x.lineWidth=0.5+Math.random();x.stroke();}
-  // Dark stains
-  for(let s=0;s<5;s++){x.beginPath();x.arc(Math.random()*512,Math.random()*512,15+Math.random()*40,0,Math.PI*2);x.fillStyle=`rgba(18,15,12,${0.15+Math.random()*0.2})`;x.fill();}
-  // Faint reddish stain (unsettling)
-  x.beginPath();x.arc(300+Math.random()*100,200+Math.random()*200,20+Math.random()*30,0,Math.PI*2);
-  x.fillStyle='rgba(50,20,15,0.08)';x.fill();
-  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.92,metalness:0.05});
-}
-function makeWallMat(){
-  const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');
-  // Institutional green-grey plaster with peeling paint
-  x.fillStyle='#4a5248';x.fillRect(0,0,512,512);
-  // Wainscot line — darker bottom half
-  x.fillStyle='#3a4238';x.fillRect(0,280,512,232);
-  x.strokeStyle='rgba(30,35,28,0.5)';x.lineWidth=2;x.beginPath();x.moveTo(0,280);x.lineTo(512,280);x.stroke();
-  // Vertical texture streaks (paint drips, age)
-  for(let i=0;i<40;i++){x.fillStyle=`rgba(${35+Math.random()*20},${40+Math.random()*20},${35+Math.random()*15},${0.04+Math.random()*0.08})`;x.fillRect(Math.random()*512,0,1+Math.random()*4,512);}
-  // Surface noise
-  for(let i=0;i<8000;i++){const b=55+Math.random()*30;x.fillStyle=`rgba(${b-5},${b},${b-8},0.06)`;x.fillRect(Math.random()*512,Math.random()*512,1+Math.random()*2,1+Math.random()*2);}
-  // Peeling patches
-  for(let s=0;s<4;s++){
-    const px=Math.random()*512,py=Math.random()*300;
-    x.beginPath();x.ellipse(px,py,8+Math.random()*25,5+Math.random()*15,Math.random()*Math.PI,0,Math.PI*2);
-    x.fillStyle=`rgba(${60+Math.random()*20},${55+Math.random()*15},${45+Math.random()*15},${0.15+Math.random()*0.2})`;x.fill();
-  }
-  // Water damage streaks from ceiling
-  for(let s=0;s<3;s++){
-    const sx=100+Math.random()*312;
-    x.beginPath();x.moveTo(sx,0);
-    x.quadraticCurveTo(sx+Math.random()*20-10,100+Math.random()*80,sx+Math.random()*15-7,200+Math.random()*100);
-    x.strokeStyle=`rgba(40,45,35,${0.1+Math.random()*0.15})`;x.lineWidth=3+Math.random()*8;x.stroke();
-  }
-  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.88});
-}
-function makeCeilingMat(){
-  const c=document.createElement('canvas');c.width=c.height=512;const x=c.getContext('2d');
-  // Stained acoustic ceiling tiles — yellowed, water-damaged
-  x.fillStyle='#3d3a32';x.fillRect(0,0,512,512);
-  // Tile grid (2x2)
-  x.strokeStyle='rgba(25,22,18,0.6)';x.lineWidth=2;
-  x.strokeRect(2,2,254,254);x.strokeRect(256,2,254,254);
-  x.strokeRect(2,256,254,254);x.strokeRect(256,256,254,254);
-  // Perforated texture (tiny dots pattern per tile)
-  for(let tx=0;tx<2;tx++)for(let ty=0;ty<2;ty++){
-    const ox=tx*256,oy=ty*256;
-    for(let i=0;i<400;i++){
-      x.beginPath();x.arc(ox+10+Math.random()*236,oy+10+Math.random()*236,0.5+Math.random()*0.5,0,Math.PI*2);
-      x.fillStyle='rgba(25,22,18,0.15)';x.fill();
+// ─── FLOOR: Dark hardwood/parquet ───
+function makeFloorMat(){
+  const c=document.createElement('canvas');c.width=512;c.height=512;const x=c.getContext('2d');
+  // Dark base
+  x.fillStyle='#1a1512';x.fillRect(0,0,512,512);
+  // Planks running lengthwise
+  const plankW = 64;
+  for(let p=0;p<8;p++){
+    const px = p * plankW;
+    // Slightly varied plank color
+    const base = 20 + Math.random()*10;
+    x.fillStyle=`rgb(${base+5},${base},${base-3})`;
+    x.fillRect(px+1, 0, plankW-2, 512);
+    // Wood grain lines
+    for(let g=0;g<30;g++){
+      const gy = Math.random()*512;
+      x.strokeStyle=`rgba(${base+15},${base+10},${base+5},${0.05+Math.random()*0.1})`;
+      x.lineWidth=0.5+Math.random()*1.5;
+      x.beginPath();
+      x.moveTo(px+2, gy);
+      x.bezierCurveTo(px+plankW*0.3, gy+Math.random()*10-5, px+plankW*0.7, gy+Math.random()*10-5, px+plankW-2, gy+Math.random()*6-3);
+      x.stroke();
+    }
+    // Gap between planks (dark line)
+    x.fillStyle='rgba(5,3,2,0.8)';
+    x.fillRect(px, 0, 1, 512);
+    x.fillRect(px+plankW-1, 0, 1, 512);
+    // Cross-plank joints every ~120px
+    for(let j=0;j<4;j++){
+      const jy = 40 + j*128 + Math.random()*20;
+      x.fillStyle='rgba(5,3,2,0.6)';
+      x.fillRect(px+1, jy, plankW-2, 1);
     }
   }
-  // Water stains (brownish rings)
-  for(let s=0;s<3;s++){
-    const sx=Math.random()*512,sy=Math.random()*512,sr=20+Math.random()*50;
-    x.beginPath();x.arc(sx,sy,sr,0,Math.PI*2);
-    x.strokeStyle=`rgba(60,50,30,${0.08+Math.random()*0.1})`;x.lineWidth=2+Math.random()*4;x.stroke();
-    x.beginPath();x.arc(sx,sy,sr*0.6,0,Math.PI*2);
-    x.fillStyle=`rgba(50,42,25,${0.06+Math.random()*0.08})`;x.fill();
+  // Scratches across planks
+  for(let s=0;s<15;s++){
+    x.beginPath();
+    x.moveTo(Math.random()*512, Math.random()*512);
+    x.lineTo(Math.random()*512, Math.random()*512);
+    x.strokeStyle=`rgba(${30+Math.random()*20},${25+Math.random()*15},${20+Math.random()*10},${0.1+Math.random()*0.15})`;
+    x.lineWidth=0.3+Math.random()*0.7;
+    x.stroke();
   }
-  // Sagging tile (one tile slightly darker)
-  const sagTile=Math.floor(Math.random()*4);
-  const sagX=(sagTile%2)*256,sagY=Math.floor(sagTile/2)*256;
-  x.fillStyle='rgba(20,18,12,0.1)';x.fillRect(sagX+4,sagY+4,248,248);
+  // Warped/buckled plank (one random plank slightly lighter = raised)
+  const warpP = Math.floor(Math.random()*8);
+  x.fillStyle='rgba(40,35,28,0.08)';
+  x.fillRect(warpP*plankW+2, 0, plankW-4, 512);
+  // Dark stains
+  for(let s=0;s<4;s++){
+    x.beginPath();x.arc(Math.random()*512,Math.random()*512,10+Math.random()*30,0,Math.PI*2);
+    x.fillStyle=`rgba(8,5,3,${0.1+Math.random()*0.15})`;x.fill();
+  }
   const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
-  return new THREE.MeshStandardMaterial({map:t,roughness:0.9});
+  return new THREE.MeshStandardMaterial({map:t, roughness:0.9, metalness:0.02});
+}
+
+// ─── WALLS: Faded vintage floral wallpaper ───
+function makeWallMat(){
+  const c=document.createElement('canvas');c.width=512;c.height=512;const x=c.getContext('2d');
+  // Cream/yellowed base
+  x.fillStyle='#d4c8a8';x.fillRect(0,0,512,512);
+  // Age it down
+  x.fillStyle='rgba(160,140,100,0.3)';x.fillRect(0,0,512,512);
+
+  // Repeating floral motif
+  const tileSize = 64;
+  for(let tx=0;tx<8;tx++) for(let ty=0;ty<8;ty++){
+    const cx=tx*tileSize+tileSize/2, cy=ty*tileSize+tileSize/2;
+    // Small floral pattern
+    x.save();
+    x.translate(cx,cy);
+    x.globalAlpha=0.12+Math.random()*0.05;
+    // Petals
+    for(let p=0;p<5;p++){
+      const a=p*Math.PI*2/5;
+      x.beginPath();
+      x.ellipse(Math.cos(a)*8, Math.sin(a)*8, 5, 3, a, 0, Math.PI*2);
+      x.fillStyle='#8a7a5a';x.fill();
+    }
+    // Center dot
+    x.beginPath();x.arc(0,0,3,0,Math.PI*2);
+    x.fillStyle='#6a5a3a';x.fill();
+    // Leaves
+    x.beginPath();x.ellipse(12,5,8,3,0.3,0,Math.PI*2);x.fillStyle='#5a6a4a';x.fill();
+    x.beginPath();x.ellipse(-12,5,8,3,-0.3,0,Math.PI*2);x.fill();
+    x.restore();
+    x.globalAlpha=1;
+  }
+
+  // Peeling sections revealing darker plaster
+  for(let p=0;p<6;p++){
+    const px=Math.random()*512, py=Math.random()*400;
+    const pw=20+Math.random()*60, ph=15+Math.random()*40;
+    // Dark plaster underneath
+    x.fillStyle=`rgba(${50+Math.random()*20},${45+Math.random()*15},${35+Math.random()*15},${0.5+Math.random()*0.3})`;
+    x.beginPath();
+    x.moveTo(px,py);
+    x.quadraticCurveTo(px+pw*0.3,py-ph*0.2,px+pw,py+ph*0.3);
+    x.quadraticCurveTo(px+pw*0.8,py+ph,px+pw*0.2,py+ph);
+    x.quadraticCurveTo(px-pw*0.1,py+ph*0.6,px,py);
+    x.fill();
+    // Peeling edge (lighter)
+    x.strokeStyle='rgba(180,170,140,0.15)';x.lineWidth=1;x.stroke();
+  }
+
+  // Water damage running down from ceiling
+  for(let w=0;w<4;w++){
+    const sx=80+Math.random()*352;
+    x.beginPath();x.moveTo(sx,0);
+    let cy=0;
+    for(let step=0;step<8;step++){
+      cy+=30+Math.random()*40;
+      x.lineTo(sx+Math.random()*15-7, cy);
+    }
+    x.strokeStyle=`rgba(80,70,45,${0.08+Math.random()*0.12})`;x.lineWidth=8+Math.random()*15;x.stroke();
+    // Darker center of water streak
+    x.strokeStyle=`rgba(60,50,30,${0.06+Math.random()*0.08})`;x.lineWidth=3+Math.random()*5;x.stroke();
+  }
+
+  // Surface noise / aging
+  for(let i=0;i<6000;i++){
+    const b=120+Math.random()*40;
+    x.fillStyle=`rgba(${b},${b-10},${b-25},0.03)`;
+    x.fillRect(Math.random()*512,Math.random()*512,1+Math.random()*2,1+Math.random()*2);
+  }
+
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  return new THREE.MeshStandardMaterial({map:t, roughness:0.88});
+}
+
+// ─── CEILING: Drop-ceiling tiles with metal grid ───
+function makeCeilingMat(){
+  const c=document.createElement('canvas');c.width=512;c.height=512;const x=c.getContext('2d');
+  // Dark base (void above)
+  x.fillStyle='#1a1815';x.fillRect(0,0,512,512);
+
+  // Metal grid framework
+  const gridColor='rgba(80,78,70,0.9)';
+  const gridWidth=4;
+  // 2x2 grid of tiles
+  for(let i=0;i<=2;i++){
+    x.fillStyle=gridColor;
+    x.fillRect(i*256-gridWidth/2, 0, gridWidth, 512);
+    x.fillRect(0, i*256-gridWidth/2, 512, gridWidth);
+  }
+
+  // Fill tiles (some missing showing dark void)
+  for(let tx=0;tx<2;tx++) for(let ty=0;ty<2;ty++){
+    const missing = (tx===1 && ty===0) ? true : Math.random() < 0.12; // ~12% missing tiles
+    if(missing) continue; // leave dark void
+
+    const ox=tx*256+gridWidth, oy=ty*256+gridWidth;
+    const tw=256-gridWidth*2, th=256-gridWidth*2;
+    // Tile color — stained yellowish-grey
+    x.fillStyle=`rgb(${55+Math.random()*10},${52+Math.random()*8},${45+Math.random()*8})`;
+    x.fillRect(ox,oy,tw,th);
+
+    // Perforated texture (tiny dots)
+    for(let i=0;i<300;i++){
+      x.beginPath();x.arc(ox+5+Math.random()*(tw-10),oy+5+Math.random()*(th-10),0.5+Math.random()*0.5,0,Math.PI*2);
+      x.fillStyle='rgba(25,22,18,0.15)';x.fill();
+    }
+
+    // Brown water rings
+    if(Math.random()<0.4){
+      const rx=ox+tw*0.3+Math.random()*tw*0.4, ry=oy+th*0.3+Math.random()*th*0.4;
+      const rr=15+Math.random()*35;
+      x.beginPath();x.arc(rx,ry,rr,0,Math.PI*2);
+      x.strokeStyle=`rgba(70,55,30,${0.12+Math.random()*0.1})`;x.lineWidth=2+Math.random()*4;x.stroke();
+      x.beginPath();x.arc(rx,ry,rr*0.5,0,Math.PI*2);
+      x.fillStyle=`rgba(60,48,25,${0.08+Math.random()*0.06})`;x.fill();
+    }
+
+    // Staining
+    x.fillStyle=`rgba(${45+Math.random()*15},${40+Math.random()*10},${28+Math.random()*10},${0.05+Math.random()*0.05})`;
+    x.fillRect(ox,oy,tw,th);
+  }
+
+  // Edge highlight on grid for metal look
+  x.strokeStyle='rgba(100,95,85,0.2)';x.lineWidth=1;
+  for(let i=0;i<=2;i++){
+    x.beginPath();x.moveTo(i*256+1,0);x.lineTo(i*256+1,512);x.stroke();
+    x.beginPath();x.moveTo(0,i*256+1);x.lineTo(512,i*256+1);x.stroke();
+  }
+
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  return new THREE.MeshStandardMaterial({map:t, roughness:0.9});
 }
 
 // ─── EDGE-BASED WALLS ───
@@ -592,48 +899,37 @@ function getVersion(cx,cz){ const k=`${cx},${cz}`; if(!chunkVersions.has(k))chun
 function bumpVersion(cx,cz){ const k=`${cx},${cz}`; const v=(chunkVersions.get(k)||0)+1; chunkVersions.set(k,v); return v; }
 
 function edgeHasWall(x1,z1,x2,z2){
-  // Guarantee spawn area open
   const d1=Math.abs(x1)+Math.abs(z1), d2=Math.abs(x2)+Math.abs(z2);
   const v1=getVersion(x1,z1),v2=getVersion(x2,z2);
   if(d1<=3 && d2<=3 && v1===0 && v2===0) return false;
 
-  // ─── CORRIDOR REGION SYSTEM ───
-  // Divide world into regions of ~7 cells. Each region has a corridor direction.
-  // Walls ALONG the corridor are rare (keep it open for walking).
-  // Walls ACROSS the corridor are common (create corridor walls).
-  // At region boundaries, walls are reduced so corridors connect.
   const regionSize = 7;
-  const off = 50000; // offset to handle negatives
+  const off = 50000;
   const rx1=Math.floor((x1+off)/regionSize), rz1=Math.floor((z1+off)/regionSize);
   const rx2=Math.floor((x2+off)/regionSize), rz2=Math.floor((z2+off)/regionSize);
 
-  // Region corridor direction — seeded by region coords + versions of both cells
   let rh=(rx1*48271+rz1*16807+v1*31+v2*37)|0;
   rh=(rh^(rh>>>13))*1274126177; rh=rh^(rh>>>16);
-  const corridorNS = ((rh>>>0)%2===0); // true = N-S corridor, false = E-W
+  const corridorNS = ((rh>>>0)%2===0);
 
-  // What does this edge block?
-  const blocksNS = (z1!==z2); // cells stacked N-S → wall blocks N-S travel
-  const blocksEW = (x1!==x2); // cells side-by-side → wall blocks E-W travel
+  const blocksNS = (z1!==z2);
+  const blocksEW = (x1!==x2);
 
   let wallChance;
   if(corridorNS){
-    wallChance = blocksNS ? 0.08 : 0.92; // Keep N-S open, wall off sides hard
+    wallChance = blocksNS ? 0.08 : 0.92;
   } else {
-    wallChance = blocksEW ? 0.08 : 0.92; // Keep E-W open, wall off sides hard
+    wallChance = blocksEW ? 0.08 : 0.92;
   }
 
-  // Region boundary — limited openings so corridors connect but sparingly
   if(rx1!==rx2 || rz1!==rz2){
-    wallChance = 0.55; // boundary = some turns, not too many
+    wallChance = 0.55;
   }
 
-  // Rare open room: ~3% of cells have reduced walls everywhere
   let oh=(x1*999961+z1*999979+x2*999983+z2*999931+v1*7+v2*11)|0;
   oh=(oh^(oh>>>15))*2654435761; oh=oh^(oh>>>13);
   if(((oh>>>0)%100)<3) wallChance=0.1;
 
-  // Final deterministic hash for this specific edge
   let h=(x1*374761393+z1*668265263+x2*982451653+z2*271828183+v1*314159+v2*161803)|0;
   h=(h^(h>>>13))*1274126177; h=(h^(h>>>16));
   const r=((h>>>0)%1000)/1000;
@@ -650,14 +946,12 @@ function cellWalls(cx,cz){
 }
 
 // ─── LOG PLACEMENT ───
-// Deterministic per-cell: ~8% of cells get a log
 function cellLogId(cx,cz,ver){
-  // No logs near spawn
   if(Math.abs(cx)+Math.abs(cz)<5) return -1;
   let h=(cx*123456789+cz*987654321+ver*555555)|0;
   h=(h^(h>>>13))*1274126177;h=(h^(h>>>16));
   const r=((h>>>0)%10000)/10000;
-  if(r>0.06) return -1; // 6% chance
+  if(r>0.06) return -1;
   return (((h>>>0)%50))+1;
 }
 
@@ -708,6 +1002,7 @@ function buildChunk(cx,cz){
 
   const walls=cellWalls(cx,cz);
   const meshes=[],lights=[];
+  const effectiveT = T * progressiveNarrow;
   const wx=cx*T, wz=cz*T;
 
   // Floor
@@ -718,51 +1013,82 @@ function buildChunk(cx,cz){
   const c=new THREE.Mesh(ceilGeo,ceilingMat);
   c.rotation.x=Math.PI/2;c.position.set(wx,H,wz);scene.add(c);meshes.push(c);
 
-  // Walls — shared geometry
+  // Walls
   if(walls.n){const w=new THREE.Mesh(wallNSGeo,wallMat);w.position.set(wx,H/2,wz-T/2);scene.add(w);meshes.push(w);}
   if(walls.s){const w=new THREE.Mesh(wallNSGeo,wallMat);w.position.set(wx,H/2,wz+T/2);scene.add(w);meshes.push(w);}
   if(walls.w){const w=new THREE.Mesh(wallEWGeo,wallMat);w.position.set(wx-T/2,H/2,wz);scene.add(w);meshes.push(w);}
   if(walls.e){const w=new THREE.Mesh(wallEWGeo,wallMat);w.position.set(wx+T/2,H/2,wz);scene.add(w);meshes.push(w);}
 
-  // Light fixture — shared geometry + materials
+  // ─── BASEBOARDS ───
+  if(walls.n){const b=new THREE.Mesh(baseboardNSGeo,baseboardMat);b.position.set(wx,0.075,wz-T/2+0.02);scene.add(b);meshes.push(b);}
+  if(walls.s){const b=new THREE.Mesh(baseboardNSGeo,baseboardMat);b.position.set(wx,0.075,wz+T/2-0.02);scene.add(b);meshes.push(b);}
+  if(walls.w){const b=new THREE.Mesh(baseboardEWGeo,baseboardMat);b.position.set(wx-T/2+0.02,0.075,wz);scene.add(b);meshes.push(b);}
+  if(walls.e){const b=new THREE.Mesh(baseboardEWGeo,baseboardMat);b.position.set(wx+T/2-0.02,0.075,wz);scene.add(b);meshes.push(b);}
+
+  // Light fixture — greenish strip
   let h2=(cx*31337+cz*73+ver*99)|0;h2=(h2^(h2>>>13))*1274126177;h2=h2^(h2>>>16);
   const lr=((h2>>>0)%1000)/1000;
-  const working=lr>0.12;
-  const hasReal=working&&(Math.abs(cx)+Math.abs(cz))%2===0;
-  const flickering=hasReal&&lr>0.94;
+  const baseFail = 0.12 + progressiveLightFail;
+  const working = lr > baseFail;
+  const hasReal = working && (Math.abs(cx)+Math.abs(cz))%2===0;
+  const flickering = hasReal && lr > 0.94;
 
-  const tube=new THREE.Mesh(tubeGeo,working?lightOnMat:lightOffMat);
+  const tube=new THREE.Mesh(tubeGeo, working ? lightOnMat : lightOffMat);
   tube.position.set(wx,H-0.04,wz);scene.add(tube);meshes.push(tube);
 
   if(hasReal){
-    const l=new THREE.PointLight(0xccddcc,0.4,T*2);
+    const l=new THREE.PointLight(0xaaccaa, 0.4, T*2); // greenish-white
     l.position.set(wx,H-0.1,wz);scene.add(l);lights.push(l);
     if(flickering){l.userData.flickering=true;l.userData.phase=lr*20;l.userData.tube=tube;}
   }
 
-  // Maybe hang a painting (~12% of walls)
+  // ─── WALL WRITING (~5% of wall segments) ───
+  const wallDirsAll = [];
+  if(walls.n) wallDirsAll.push('n');
+  if(walls.s) wallDirsAll.push('s');
+  if(walls.w) wallDirsAll.push('w');
+  if(walls.e) wallDirsAll.push('e');
+
+  if(wallDirsAll.length > 0){
+    let wh=(cx*54321+cz*12345+ver*77)|0;wh=(wh^(wh>>>11))*2654435761;wh=wh^(wh>>>13);
+    const writeR=((wh>>>0)%100);
+    if(writeR < 5){
+      const pickDir = wallDirsAll[(wh>>>5)%wallDirsAll.length];
+      const matIdx = ((wh>>>8)%wallWritingMats.length);
+      const writeMesh = new THREE.Mesh(wallWritingGeo, wallWritingMats[matIdx]);
+      const wy = 1.0 + ((wh>>>12)%40-20)*0.01;
+      const wallOffset = 0.03; // avoid z-fighting
+      if(pickDir==='n'){
+        writeMesh.position.set(wx, wy, wz-T/2+wallOffset+0.1);
+      } else if(pickDir==='s'){
+        writeMesh.position.set(wx, wy, wz+T/2-wallOffset-0.1);
+        writeMesh.rotation.y=Math.PI;
+      } else if(pickDir==='w'){
+        writeMesh.position.set(wx-T/2+wallOffset+0.1, wy, wz);
+        writeMesh.rotation.y=Math.PI/2;
+      } else {
+        writeMesh.position.set(wx+T/2-wallOffset-0.1, wy, wz);
+        writeMesh.rotation.y=-Math.PI/2;
+      }
+      scene.add(writeMesh);meshes.push(writeMesh);
+    }
+  }
+
+  // ─── PAINTINGS (~12% of walls) ───
   let ph=(cx*777+cz*999+ver*13)|0;ph=(ph^(ph>>>11))*2654435761;ph=ph^(ph>>>15);
   const paintR=((ph>>>0)%100);
   if(paintR<12){
-    // Pick which wall to put it on (only existing walls)
-    const wallDirs=[];
-    if(walls.n) wallDirs.push('n');
-    if(walls.s) wallDirs.push('s');
-    if(walls.w) wallDirs.push('w');
-    if(walls.e) wallDirs.push('e');
-    if(wallDirs.length>0){
-      const pickDir=wallDirs[(ph>>>8)%wallDirs.length];
-      const artIdx=((ph>>>4)%12);
+    if(wallDirsAll.length>0){
+      const pickDir=wallDirsAll[(ph>>>8)%wallDirsAll.length];
+      const artIdx=((ph>>>4)%15); // now 15 artworks
       const py=H*0.48+((ph>>>16)%20-10)*0.005;
       const sz=paintingGeos[artIdx].parameters;
       const fw=sz.width+0.08, fh=sz.height+0.08;
 
-      // Frame first (sits against wall), then painting in front of frame
       const frameMat=new THREE.MeshStandardMaterial({color:0x1a1815,roughness:0.9,metalness:0.05});
       const frame=new THREE.Mesh(new THREE.BoxGeometry(fw,fh,0.04),frameMat);
       const painting=new THREE.Mesh(paintingGeos[artIdx],paintingMats[artIdx]);
 
-      // Wall offset: frame flush against wall, painting 0.025 in front
       const wallOff=0.12, paintOff=wallOff+0.025;
       if(pickDir==='n'){
         frame.position.set(wx,py,wz-T/2+wallOff);
@@ -809,14 +1135,13 @@ function isInView(cx,cz,px,pz,fx,fz){
   return(dx*fx+dz*fz)/Math.max(dist,0.01)>-0.25;
 }
 
-const BUILD_PER_FRAME = 4; // max new chunks per update
+const BUILD_PER_FRAME = 4;
 const DESTROY_PER_FRAME = 6;
 
 function updateWorld(){
   const px=Math.round(camera.position.x/T),pz=Math.round(camera.position.z/T);
   const fwd=new THREE.Vector3(0,0,-1).applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
 
-  // Destroy out-of-view (throttled)
   let destroyed=0;
   for(const[key,chunk]of builtChunks){
     if(destroyed>=DESTROY_PER_FRAME) break;
@@ -827,7 +1152,6 @@ function updateWorld(){
     }
   }
 
-  // Build in-view (throttled, closest first)
   const needed=[];
   for(let dx=-VIEW_DIST;dx<=VIEW_DIST;dx++)
     for(let dz=-VIEW_DIST;dz<=VIEW_DIST;dz++){
@@ -840,7 +1164,6 @@ function updateWorld(){
       if(isInView(cx,cz,px,pz,fwd.x,fwd.z))
         needed.push({cx,cz,dist:dx*dx+dz*dz});
     }
-  // Build closest first
   needed.sort((a,b)=>a.dist-b.dist);
   for(let i=0;i<Math.min(needed.length,BUILD_PER_FRAME);i++)
     buildChunk(needed[i].cx,needed[i].cz);
@@ -872,7 +1195,7 @@ function checkNearLog(){
   const px=camera.position.x,pz=camera.position.z;
   for(const[key,wl]of worldLogs){
     const dx=wl.group.position.x-px,dz=wl.group.position.z-pz;
-    if(dx*dx+dz*dz<2.5){ // within ~1.6 units
+    if(dx*dx+dz*dz<2.5){
       nearLog=wl;
       break;
     }
@@ -895,11 +1218,9 @@ function pickupLog(){
   const log=LOGS.find(l=>l.id===id);
   if(log) showPaper(log);
 
-  // Save to localStorage
   localStorage.setItem('dreamSubwayLogs',JSON.stringify([...foundLogs]));
 }
 
-// Load saved logs
 function loadSavedLogs(){
   try{
     const saved=JSON.parse(localStorage.getItem('dreamSubwayLogs')||'[]');
@@ -909,7 +1230,7 @@ function loadSavedLogs(){
 }
 
 // ─── AUDIO ───
-let audioCtx,masterGain,humStarted=false;
+let audioCtx, masterGain, humStarted=false;
 function initAudio(){
   if(humStarted)return;
   audioCtx=new(window.AudioContext||window.webkitAudioContext)();
@@ -925,6 +1246,10 @@ function initAudio(){
   const buzzG=audioCtx.createGain();buzzG.gain.value=0.005;
   const buzzF=audioCtx.createBiquadFilter();buzzF.type='bandpass';buzzF.frequency.value=240;buzzF.Q.value=8;
   buzz.connect(buzzF);buzzF.connect(buzzG);buzzG.connect(masterGain);buzz.start();
+
+  // Store hum for pitch shifting (progressive horror)
+  window._humOsc = h;
+  window._buzzOsc = buzz;
 
   setInterval(()=>{
     if(Math.random()>0.4)return;
@@ -954,7 +1279,70 @@ function initAudio(){
   startMusic();
 }
 
-// Footsteps removed
+// ─── PROCEDURAL AUDIO EVENTS ───
+function playDoorSlam(){
+  if(!audioCtx) return;
+  const dur = 0.3;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate*dur, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){
+    const t=i/audioCtx.sampleRate;
+    const env = Math.exp(-t*15);
+    d[i] = (Math.sin(t*80*Math.PI*2) + Math.sin(t*45*Math.PI*2)*0.5 + Math.random()*0.4) * env * 0.3;
+  }
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+  const g = audioCtx.createGain(); g.gain.value = 0.25;
+  const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random()*2-1;
+  const lp = audioCtx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=200;
+  src.connect(lp); lp.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
+}
+
+function playWhisper(){
+  if(!audioCtx) return;
+  const dur = 0.15+Math.random()*0.1;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate*dur, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for(let i=0;i<d.length;i++){
+    const t=i/audioCtx.sampleRate;
+    const env = Math.sin(t/dur*Math.PI);
+    d[i] = (Math.random()*2-1) * env * 0.03;
+  }
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+  const bp = audioCtx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=2000+Math.random()*1000; bp.Q.value=3;
+  const g = audioCtx.createGain(); g.gain.value = 0.06;
+  const pan = audioCtx.createStereoPanner(); pan.pan.value = Math.random()*2-1;
+  src.connect(bp); bp.connect(pan); pan.connect(g); g.connect(masterGain); src.start();
+}
+
+function startBreathing(){
+  if(!audioCtx || breathingNode) return;
+  // Create a breathing sound using oscillator + gain modulation
+  breathingNode = audioCtx.createOscillator();
+  breathingNode.type = 'sine';
+  breathingNode.frequency.value = 100;
+  const noise = audioCtx.createOscillator();
+  noise.type = 'sawtooth'; noise.frequency.value = 60;
+  breathingGain = audioCtx.createGain();
+  breathingGain.gain.value = 0;
+  const bp = audioCtx.createBiquadFilter(); bp.type='lowpass'; bp.frequency.value=200;
+  breathingNode.connect(bp);
+  noise.connect(bp);
+  bp.connect(breathingGain);
+  breathingGain.connect(masterGain);
+  breathingNode.start(); noise.start();
+  breathingNode._noise = noise;
+}
+
+function stopBreathing(){
+  if(breathingNode){
+    try{
+      breathingNode.stop();
+      if(breathingNode._noise) breathingNode._noise.stop();
+    }catch(e){}
+    breathingNode = null;
+    breathingGain = null;
+  }
+}
 
 // Background music
 let bgMusic=null, musicStarted=false;
@@ -965,7 +1353,6 @@ function startMusic(){
   bgMusic.volume=parseFloat(localStorage.getItem('dreamSubwayVol')||'0.5');
   bgMusic.play().catch(()=>{});
   musicStarted=true;
-  // Update slider if it exists
   const sl=document.getElementById('vol-slider');
   if(sl) sl.value=bgMusic.volume;
   updateMuteBtn();
@@ -995,6 +1382,76 @@ function updateMuteBtn(){
   btn.textContent=bgMusic.volume>0?'🔊 Mute':'🔇 Unmute';
 }
 
+// ─── SHADOW FIGURE ───
+function spawnShadowFigure(){
+  if(shadowFigure) return;
+  const group = new THREE.Group();
+  // Tall cylinder body
+  const bodyGeo = new THREE.CylinderGeometry(0.15, 0.15, 2.0, 8);
+  const body = new THREE.Mesh(bodyGeo, shadowMat);
+  body.position.y = 1.0;
+  group.add(body);
+  // Sphere head
+  const headGeo = new THREE.SphereGeometry(0.18, 8, 6);
+  const head = new THREE.Mesh(headGeo, shadowMat);
+  head.position.y = 2.2;
+  group.add(head);
+
+  // Position 12 units ahead of player view direction
+  const fwd = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0,1,0), yaw);
+  group.position.set(
+    camera.position.x + fwd.x * 12,
+    0,
+    camera.position.z + fwd.z * 12
+  );
+
+  scene.add(group);
+  shadowFigure = { group, spawnTime: Date.now(), fadeStart: null };
+}
+
+function updateShadowFigure(){
+  if(!shadowFigure) return;
+  const elapsed = (Date.now() - shadowFigure.spawnTime) / 1000;
+
+  // Check proximity
+  const dx = shadowFigure.group.position.x - camera.position.x;
+  const dz = shadowFigure.group.position.z - camera.position.z;
+  const dist = Math.sqrt(dx*dx + dz*dz);
+
+  // Vanish if player gets within 5 units
+  if(dist < 5){
+    removeShadowFigure();
+    return;
+  }
+
+  // After 3 seconds, start fading
+  if(elapsed > 3){
+    if(!shadowFigure.fadeStart) shadowFigure.fadeStart = Date.now();
+    const fadeElapsed = (Date.now() - shadowFigure.fadeStart) / 1000;
+    shadowMat.opacity = Math.max(0, 1.0 - fadeElapsed / 1.0);
+    if(shadowMat.opacity <= 0){
+      removeShadowFigure();
+      return;
+    }
+  }
+
+  // Heartbeat overlay effect
+  const heartbeatEl = document.getElementById('heartbeat-overlay');
+  if(dist < 15){
+    heartbeatEl.classList.add('pulse');
+  } else {
+    heartbeatEl.classList.remove('pulse');
+  }
+}
+
+function removeShadowFigure(){
+  if(!shadowFigure) return;
+  scene.remove(shadowFigure.group);
+  shadowFigure = null;
+  shadowMat.opacity = 1.0;
+  document.getElementById('heartbeat-overlay').classList.remove('pulse');
+}
+
 // ─── CONTROLS ───
 const keys={};
 addEventListener('keydown',e=>{
@@ -1018,8 +1475,8 @@ addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
 // ─── INIT ───
 function init(){
   scene=new THREE.Scene();
-  scene.background=new THREE.Color(0x050806);
-  scene.fog=new THREE.Fog(0x050806, 2, 20); // Linear fog: starts close, full at 18 units
+  scene.background=new THREE.Color(0x030508); // near-black with blue tint
+  scene.fog=new THREE.Fog(0x030508, 1.5, 16);
   clock=new THREE.Clock();
 
   renderer=new THREE.WebGLRenderer({antialias:true});
@@ -1033,14 +1490,19 @@ function init(){
   camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,100);
   camera.position.set(0,1.5,0);
 
-  scene.add(new THREE.AmbientLight(0x0a100a,0.12));
+  // Ambient light — cool blue, very dim
+  scene.add(new THREE.AmbientLight(0x080a12, 0.08));
 
-  // Flashlight — big and bright
-  flashlight = new THREE.SpotLight(0xdde8dd, 3.5, 22, Math.PI/5, 0.35, 1.0);
+  // Flashlight — wider, cooler beam, bluish-white
+  flashlight = new THREE.SpotLight(0xd0d8ff, 4.0, 25, Math.PI/4.5, 0.35, 1.0);
   scene.add(flashlight);
   flashlightTarget = new THREE.Object3D();
   scene.add(flashlightTarget);
   flashlight.target = flashlightTarget;
+
+  // Secondary player glow — subtle warm point light
+  playerGlow = new THREE.PointLight(0xffe8cc, 0.15, 3);
+  scene.add(playerGlow);
 
   initResources();
 
@@ -1050,6 +1512,7 @@ function init(){
       if(dx*dx+dz*dz<=VIEW_DIST*VIEW_DIST) buildChunk(dx,dz);
 
   loadSavedLogs();
+  lastPlayerPos.copy(camera.position);
 
   document.addEventListener('click',()=>{
     if(!overlayOpen&&!paperOpen&&!storyOpen&&!escMenuOpen){
@@ -1075,15 +1538,26 @@ function init(){
 
 // ─── LOOP ───
 let updateTimer=0;
+let eventTimer=0;
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.1),t=clock.getElapsedTime();
 
+  // Update progressive horror
+  updateProgressive();
+
+  // Progressive audio pitch shift after 15 minutes
+  if(getSessionMinutes() >= 15 && window._humOsc){
+    window._humOsc.frequency.value = 60 * 0.9;
+    window._buzzOsc.frequency.value = 120 * 0.9;
+  }
+
+  let moving = false;
   if(!overlayOpen&&!paperOpen&&!storyOpen&&!escMenuOpen){
     const speed=2.5,dir=new THREE.Vector3();
     if(keys['w'])dir.z-=1;if(keys['s'])dir.z+=1;
     if(keys['a'])dir.x-=1;if(keys['d'])dir.x+=1;
-    const moving=dir.length()>0.01;
+    moving=dir.length()>0.01;
     dir.normalize().multiplyScalar(speed*dt);
     dir.applyAxisAngle(new THREE.Vector3(0,1,0),yaw);
     const nx=camera.position.x+dir.x,nz=camera.position.z+dir.z;
@@ -1091,7 +1565,6 @@ function animate(){
     if(canMove(camera.position.x,nz))camera.position.z=nz;
     camera.position.y=1.5+(moving?Math.sin(t*8)*0.015:0);
     camera.rotation.order='YXZ';camera.rotation.y=yaw;camera.rotation.x=pitch;
-    // (footsteps removed)
   }
 
   // Flashlight follows camera
@@ -1099,6 +1572,80 @@ function animate(){
   flashlight.position.y-=0.2;
   const fld=new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion);
   flashlightTarget.position.copy(camera.position).add(fld.multiplyScalar(8));
+
+  // Player glow follows camera
+  playerGlow.position.copy(camera.position);
+
+  // ─── RANDOM EVENTS ───
+  eventTimer += dt;
+
+  // Lights-out event (~once every 90 seconds)
+  if(!lightsOutActive && eventTimer > 5){
+    if(Math.random() < dt/90){ // probability per frame
+      lightsOutActive = true;
+      lightsOutEnd = t + 2 + Math.random();
+      lastLightsOut = t;
+    }
+  }
+  if(lightsOutActive){
+    if(t >= lightsOutEnd){
+      lightsOutActive = false;
+      // Restore lights
+      for(const[,chunk]of builtChunks)
+        for(const l of chunk.lights)
+          if(!l.userData.flickering) l.intensity = 0.4;
+    } else {
+      // Kill all lights except flashlight
+      for(const[,chunk]of builtChunks)
+        for(const l of chunk.lights) l.intensity = 0;
+    }
+  }
+
+  // Door slam (every 30-60 seconds)
+  if(t - lastDoorSlam > nextDoorSlam && audioCtx){
+    playDoorSlam();
+    lastDoorSlam = t;
+    nextDoorSlam = 30 + Math.random()*30;
+  }
+
+  // Whisper (every 40-80 seconds)
+  if(t - lastWhisper > nextWhisper && audioCtx){
+    playWhisper();
+    lastWhisper = t;
+    nextWhisper = 40 + Math.random()*40;
+  }
+
+  // Breathing when still
+  const posDelta = camera.position.distanceTo(lastPlayerPos);
+  if(posDelta < 0.01){
+    playerStillTime += dt;
+    if(playerStillTime > 8){
+      if(!breathingNode) startBreathing();
+      if(breathingGain){
+        // Louder the longer they stay still, max 0.15
+        const breathVol = Math.min(0.15, (playerStillTime-8) * 0.008);
+        breathingGain.gain.value = breathVol;
+        // Modulate for rhythm (inhale/exhale)
+        const breathCycle = Math.sin(t * 1.2) * 0.5 + 0.5;
+        breathingGain.gain.value = breathVol * breathCycle;
+      }
+    }
+  } else {
+    if(playerStillTime > 8) stopBreathing();
+    playerStillTime = 0;
+  }
+  lastPlayerPos.copy(camera.position);
+
+  // ─── SHADOW FIGURE ───
+  if(!shadowFigure){
+    if(t - lastShadowCheck > SHADOW_CHECK_INTERVAL){
+      lastShadowCheck = t;
+      if(Math.random() < 0.15){
+        spawnShadowFigure();
+      }
+    }
+  }
+  updateShadowFigure();
 
   updateTimer+=dt;
   if(updateTimer>0.1){
@@ -1109,15 +1656,19 @@ function animate(){
     document.getElementById('hud').textContent=`level ${Math.abs(px+pz*7)%100}`;
   }
 
-  // Flicker
-  for(const[,chunk]of builtChunks)
-    for(const l of chunk.lights)
-      if(l.userData.flickering){
-        const fl=Math.sin(t*12+l.userData.phase)*Math.sin(t*19+l.userData.phase*2);
-        const on=fl>-0.2;
-        l.intensity=on?0.7+Math.random()*0.2:0;
-        if(l.userData.tube){l.userData.tube.material.emissiveIntensity=on?0.8:0;l.userData.tube.material.color.set(on?0xffffee:0x333333);}
-      }
+  // Flicker — greenish-white to dark
+  if(!lightsOutActive){
+    for(const[,chunk]of builtChunks)
+      for(const l of chunk.lights)
+        if(l.userData.flickering){
+          const fl=Math.sin(t*12+l.userData.phase)*Math.sin(t*19+l.userData.phase*2);
+          const on=fl>-0.2;
+          l.intensity=on?0.7+Math.random()*0.2:0;
+          if(l.userData.tube){
+            l.userData.tube.material = on ? lightOnMat : lightOffMat;
+          }
+        }
+  }
 
   renderer.render(scene,camera);
 }
