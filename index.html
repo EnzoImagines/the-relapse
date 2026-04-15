@@ -216,10 +216,64 @@
     70% { opacity: 0.1; }
     100% { opacity: 0; }
   }
+
+  /* Username entry screen */
+  #username-screen {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: radial-gradient(ellipse at center, #0a0908 0%, #000 100%);
+    z-index: 1000; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    font-family: 'Courier New', monospace;
+  }
+  #username-screen.hidden { display: none; }
+  #username-screen h1 {
+    color: #aa9960; font-size: 32px; letter-spacing: 8px;
+    margin-bottom: 8px; text-shadow: 0 0 20px rgba(170,153,96,0.3);
+    animation: titleFlicker 4s ease-in-out infinite;
+  }
+  @keyframes titleFlicker {
+    0%,100% { opacity: 1; } 50% { opacity: 0.85; } 52% { opacity: 0.95; }
+  }
+  #username-screen .subtitle {
+    color: #554433; font-size: 11px; letter-spacing: 3px;
+    margin-bottom: 40px;
+  }
+  #username-screen .stats-line {
+    color: #665544; font-size: 11px; margin-bottom: 30px;
+    opacity: 0.7; min-height: 16px;
+  }
+  #username-input {
+    background: rgba(20,18,14,0.8); border: 1px solid rgba(100,90,60,0.3);
+    color: #aa9960; font-family: 'Courier New', monospace; font-size: 15px;
+    padding: 12px 20px; width: 280px; text-align: center;
+    outline: none; margin-bottom: 12px;
+    transition: border-color 0.3s;
+  }
+  #username-input:focus { border-color: rgba(170,153,96,0.5); }
+  #username-input::placeholder { color: #554433; }
+  #username-error {
+    color: #884430; font-size: 11px; min-height: 18px;
+    margin-bottom: 16px;
+  }
+  #username-enter {
+    background: rgba(60,50,35,0.4); border: 1px solid rgba(100,90,60,0.25);
+    color: #998860; font-family: 'Courier New', monospace; font-size: 14px;
+    padding: 10px 40px; cursor: pointer; letter-spacing: 4px;
+    transition: background 0.2s, color 0.2s;
+  }
+  #username-enter:hover { background: rgba(80,70,50,0.5); color: #ccbb88; }
 </style>
 </head>
 <body>
-<div id="prompt">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact · L for journal</span></div>
+<div id="username-screen">
+  <h1>THE RELAPSE</h1>
+  <div class="subtitle">a backrooms horror experience</div>
+  <div class="stats-line" id="global-stats"></div>
+  <input type="text" id="username-input" placeholder="enter your name" maxlength="20" autocomplete="off" spellcheck="false">
+  <div id="username-error"></div>
+  <button id="username-enter">ENTER</button>
+</div>
+<div id="prompt" class="hidden">click to enter<br><span style="color:#444;font-size:11px">WASD to move · mouse to look · E to interact · L for journal</span></div>
 <div id="hud">level 0</div>
 <div id="interact">press E to read</div>
 <div id="top-hud">
@@ -286,6 +340,96 @@
 let foundLogs = new Set();
 window.logData = [];
 let overlayOpen = false;
+window.playerUsername = '';
+
+// ─── AI-GENERATED LOGS CACHE ───
+const generatedLogs = new Map(); // key: "cx,cz" -> {text, inGameLogId, loaded: bool}
+const API_BASE = 'https://the-relapse-api.relapselogs10.workers.dev';
+
+window.prefetchLogText = prefetchLogText;
+function prefetchLogText(cx, cz, inGameLogId) {
+  const key = `${cx},${cz}`;
+  if (generatedLogs.has(key)) return;
+  generatedLogs.set(key, { text: null, inGameLogId, loaded: false });
+  fetch(`${API_BASE}/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inGameLogId })
+  })
+    .then(r => r.json())
+    .then(data => {
+      const entry = generatedLogs.get(key);
+      if (entry) { entry.text = data.text; entry.loaded = true; }
+    })
+    .catch(() => {
+      const entry = generatedLogs.get(key);
+      if (entry) entry.loaded = true; // mark loaded so fallback is used
+    });
+}
+
+function firePickupEvent(logText, inGameLogId) {
+  fetch(`${API_BASE}/pickup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: window.playerUsername,
+      logText: logText,
+      inGameLogId: inGameLogId
+    })
+  }).catch(() => {}); // fire-and-forget
+}
+
+// ─── PROFANITY FILTER ───
+const BLOCKED_WORDS = [
+  'fuck','shit','ass','bitch','cunt','dick','cock','pussy','whore','slut',
+  'fag','faggot','nigger','nigga','retard','rape','nazi','porn','cum',
+  'bastard','damn','piss','twat','wank','bollocks','arse','tits','boob',
+  'penis','vagina','dildo','anal','sex','nude','naked'
+];
+function containsProfanity(text) {
+  const lower = text.toLowerCase().replace(/[^a-z]/g, ' ');
+  return BLOCKED_WORDS.some(w => {
+    const re = new RegExp('\\b' + w + '\\b');
+    return re.test(lower);
+  });
+}
+
+// ─── USERNAME SCREEN ───
+function fetchGlobalStats() {
+  fetch(`${API_BASE}/stats`)
+    .then(r => r.json())
+    .then(data => {
+      const el = document.getElementById('global-stats');
+      if (el && data.totalLogsFound != null) {
+        el.textContent = `total logs discovered: ${data.totalLogsFound}`;
+      }
+    })
+    .catch(() => {});
+}
+
+function submitUsername() {
+  const input = document.getElementById('username-input');
+  const error = document.getElementById('username-error');
+  const name = input.value.trim();
+
+  if (!name) { error.textContent = 'Please enter a username.'; return; }
+  if (name.length > 20) { error.textContent = 'Username must be 20 characters or less.'; return; }
+  if (!/^[a-zA-Z0-9_ -]+$/.test(name)) { error.textContent = 'Only letters, numbers, spaces, dashes, and underscores.'; return; }
+  if (containsProfanity(name)) { error.textContent = 'Username contains inappropriate language.'; return; }
+
+  window.playerUsername = name;
+  document.getElementById('username-screen').classList.add('hidden');
+  document.getElementById('prompt').classList.remove('hidden');
+}
+
+// Init username screen
+document.addEventListener('DOMContentLoaded', () => {
+  fetchGlobalStats();
+  document.getElementById('username-enter').addEventListener('click', submitUsername);
+  document.getElementById('username-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') submitUsername();
+  });
+});
 
 function openLogOverlay() {
   document.exitPointerLock();
@@ -1114,6 +1258,8 @@ function buildChunk(cx,cz){
   const logId=cellLogId(cx,cz,ver);
   if(logId>0 && !foundLogs.has(logId)){
     spawnLog(cx,cz,logId);
+    // Pre-fetch AI-generated text (fire-and-forget)
+    window.prefetchLogText(cx, cz, logId);
   }
 }
 
@@ -1210,13 +1356,29 @@ function pickupLog(){
   const id=nearLog.logId;
   foundLogs.add(id);
   const key=`${nearLog.cx},${nearLog.cz}`;
+  const chunkKey = key;
   removeWorldLog(key);
   nearLog=null;
   document.getElementById('interact').classList.remove('visible');
   updateCounter();
 
-  const log=LOGS.find(l=>l.id===id);
-  if(log) showPaper(log);
+  const fallbackLog = window.logData.find(l=>l.id===id);
+  const cached = generatedLogs.get(chunkKey);
+
+  let displayText;
+  let displayTitle = fallbackLog ? fallbackLog.title : `Log #${id}`;
+  if (cached && cached.loaded && cached.text) {
+    displayText = cached.text;
+  } else if (cached && !cached.loaded) {
+    displayText = 'The ink is still forming...';
+  } else {
+    displayText = fallbackLog ? fallbackLog.text : 'The ink is still forming...';
+  }
+
+  showPaper({ title: displayTitle, text: displayText });
+
+  // Fire pickup event to API (fire-and-forget)
+  firePickupEvent(displayText, id);
 
   localStorage.setItem('dreamSubwayLogs',JSON.stringify([...foundLogs]));
 }
